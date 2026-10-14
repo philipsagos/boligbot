@@ -15,7 +15,7 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -25,6 +25,15 @@ jobs:
           cache: pip
 
       - run: pip install -r requirements.txt
+
+      - name: Gem browseren mellem kørsler
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-v1
+
+      - name: Installer usynlig browser
+        run: python -m playwright install --with-deps chromium
 
       - name: Kør boligbot
         run: python boligbot.py
