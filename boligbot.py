@@ -221,6 +221,19 @@ VAER_RE = re.compile(r"(\d)\s*-?\s*(?:vær|værelser|rum|room)", re.I)
 POSTNR_RE = re.compile(r"\b(\d{4})\s+[A-ZÆØÅ]")
 ADRESSE_RE = re.compile(r"([A-ZÆØÅ][A-Za-zÆØÅæøåé.' -]{2,40}?\s\d+\s?[A-Za-z]?(?:,\s*[^,\d]{0,6}\d*\.?\s*[a-zæøå.]{0,4})?),?\s*(\d{4})\s+[A-ZÆØÅ]")
 
+SLUG_RE = re.compile(r"(?P<vej>[a-z-]+?)-(?P<nr>\d+(?:-[a-z])?)-(?P<etage>st|kl|\d{1,2})-"
+                     r"(?P<side>[a-z]{1,2}|\d{1,2})-(?P<pn>\d{4})-(?P<by>[a-z-]+?)(?:-danmark)?/?$")
+
+
+def adresse_fra_link(url):
+    """'.../else-alfelts-vej-80-st-tv-2300-koebenhavn-s-danmark' -> 'Else Alfelts Vej 80, st. tv, 2300 Koebenhavn S'"""
+    m = SLUG_RE.search(url.rstrip("/").rsplit("/", 1)[-1])
+    if not m:
+        return None
+    vej = m["vej"].replace("-", " ").title()
+    nr = m["nr"].replace("-", "").upper()
+    return f"{vej} {nr}, {m['etage']}. {m['side']}, {m['pn']} {m['by'].replace('-', ' ').title()}"
+
 
 def render_side(url):
     from playwright.sync_api import sync_playwright
@@ -264,10 +277,11 @@ def generisk_liste(kilde, url):
             continue
         adr = ADRESSE_RE.search(t)
         pn = POSTNR_RE.search(t)
+        adresse = f"{adr.group(1).strip()}, {adr.group(2)}" if adr else adresse_fra_link(href)
         boliger[href] = {
             "kilde": kilde,
             "url": href,
-            "adresse": f"{adr.group(1).strip()}, {adr.group(2)}" if adr else None,
+            "adresse": adresse,
             "postnr": int(pn.group(1)) if pn else None,
             "leje": tal(p.group(1)) if (p := PRIS_RE.search(t)) else None,
             "aconto": tal(ac.group(1)) if (ac := re.search(r"aconto[^\d]{0,15}([\d.]+)", t, re.I)) else None,
@@ -290,7 +304,7 @@ def balder_liste():
 
 
 def heimstaden_liste():
-    return generisk_liste("Heimstaden", "https://heimstaden.com/dk/ledige-boliger/")
+    return generisk_liste("Heimstaden", "https://www.heimstaden.dk/lejeboliger/koebenhavn/")
 
 
 KILDER = [
