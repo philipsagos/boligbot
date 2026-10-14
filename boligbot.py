@@ -141,7 +141,7 @@ def kereby_liste():
             "leje": tal(m2.group(1)) if (m2 := re.search(r"([\d.]+)\s*kr\./md", t)) else None,
             "aconto": None,
             "vaer": int(v.group(1)) if (v := re.search(r"(\d+)\s*v[æa]relser", t)) else None,
-            "m2": int(k.group(1)) if (k := re.search(r"(\d+)\s*m(?:2|²)", t)) else None,
+            "m2": int(k.group(1)) if (k := re.search(r"(\d+)\s*m\s*(?:2|²)", t)) else None,
             "altan": bool(re.search(r"\baltan\b", t, re.I)),
             "ledig": None,
             "tidsbegraenset": None,
@@ -162,6 +162,8 @@ def kereby_detaljer(b):
     t = soup.get_text(" ", strip=True)
     if (m := re.search(r"Leje\s*([\d.]+)\s*kr\./md", t)):
         b["leje"] = tal(m.group(1))
+    if b["m2"] is None and (m := re.search(r"(\d+)\s*m\s*(?:2|²)", t)):
+        b["m2"] = int(m.group(1))
     if (m := re.search(r"aconto\s*([\d.]+)\s*kr", t, re.I)):
         b["aconto"] = tal(m.group(1))
     if (m := re.search(r"(?:Overtagelse|Indflytning|Ledig)[^\d]{0,20}(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})", t, re.I)):
@@ -209,9 +211,93 @@ def cityapartment_liste():
     return list(boliger.values())
 
 
+# ---------------------------------------------------------------------
+#  SIDER DER INDLÆSES MED JAVASCRIPT (Balder, Heimstaden)
+#  Åbnes i en usynlig browser (Playwright) og læses generelt.
+# ---------------------------------------------------------------------
+PRIS_RE = re.compile(r"(\d{1,2}[.\s]?\d{3})\s*(?:kr|DKK)", re.I)
+M2_RE = re.compile(r"(\d{2,3})\s*(?:m\s*2|m²|kvm)", re.I)
+VAER_RE = re.compile(r"(\d)\s*-?\s*(?:vær|værelser|rum|room)", re.I)
+POSTNR_RE = re.compile(r"\b(\d{4})\s+[A-ZÆØÅ]")
+ADRESSE_RE = re.compile(r"([A-ZÆØÅ][A-Za-zÆØÅæøåé.' -]{2,40}?\s\d+\s?[A-Za-z]?(?:,\s*[^,\d]{0,6}\d*\.?\s*[a-zæøå.]{0,4})?),?\s*(\d{4})\s+[A-ZÆØÅ]")
+
+
+def render_side(url):
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        side = browser.new_page(user_agent=HEADERS["User-Agent"], locale="da-DK")
+        side.goto(url, wait_until="networkidle", timeout=60000)
+        for _ in range(6):   # scroll for at få alle boliger indlæst
+            side.mouse.wheel(0, 4000)
+            side.wait_for_timeout(700)
+        indhold = side.content()
+        browser.close()
+    return indhold
+
+
+def generisk_liste(kilde, url):
+    soup = BeautifulSoup(render_side(url), "html.parser")
+    vaert = re.match(r"https?://[^/]+", url).group(0)
+    boliger = {}
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href.startswith("/"):
+            href = vaert + href
+        if not href.startswith(vaert) or href.rstrip("/") == url.rstrip("/"):
+            continue
+        node, kort = a, None
+        for _ in range(8):   # gå op til den boks der har både pris og m²
+            t = node.get_text(" ", strip=True)
+            if PRIS_RE.search(t) and M2_RE.search(t):
+                kort = node
+                break
+            if node.parent is None:
+                break
+            node = node.parent
+        if kort is None:
+            continue
+        t = kort.get_text(" ", strip=True)
+        if len(t) > 1500 or href in boliger:   # for stor boks = flere boliger
+            continue
+        if re.search(r"\b(Reserveret|Udlejet|Rented)\b", t, re.I):
+            continue
+        adr = ADRESSE_RE.search(t)
+        pn = POSTNR_RE.search(t)
+        boliger[href] = {
+            "kilde": kilde,
+            "url": href,
+            "adresse": f"{adr.group(1).strip()}, {adr.group(2)}" if adr else None,
+            "postnr": int(pn.group(1)) if pn else None,
+            "leje": tal(p.group(1)) if (p := PRIS_RE.search(t)) else None,
+            "aconto": tal(ac.group(1)) if (ac := re.search(r"aconto[^\d]{0,15}([\d.]+)", t, re.I)) else None,
+            "vaer": int(v.group(1)) if (v := VAER_RE.search(t)) else None,
+            "m2": int(k.group(1)) if (k := M2_RE.search(t)) else None,
+            "altan": bool(re.search(r"\baltan|balcon", t, re.I)),
+            "ledig": None,
+            "tidsbegraenset": bool(re.search(r"tidsbegr[æa]ns", t, re.I)),
+        }
+    if not boliger:
+        # Hjælp til fejlfinding: vis hvad siden faktisk indeholdt
+        print(f"  [debug {kilde}] sidens tekst: {soup.get_text(' ', strip=True)[:1500]}")
+        links = sorted({a['href'] for a in soup.find_all('a', href=True)})[:60]
+        print(f"  [debug {kilde}] links: {links}")
+    return list(boliger.values())
+
+
+def balder_liste():
+    return generisk_liste("Balder", "https://www.balder.dk/lejeboliger")
+
+
+def heimstaden_liste():
+    return generisk_liste("Heimstaden", "https://heimstaden.com/dk/ledige-boliger/")
+
+
 KILDER = [
     ("Kereby", kereby_liste, kereby_detaljer),
     ("City Apartment", cityapartment_liste, None),
+    ("Balder", balder_liste, None),
+    ("Heimstaden", heimstaden_liste, None),
 ]
 
 
@@ -251,6 +337,9 @@ def vurder(b):
 
     if b["adresse"] and er_stueetage(b["adresse"]):
         return "nej", ["stueetage"]
+    if not b["adresse"]:
+        gul = True
+        noter.append("etage ukendt — tjek at det ikke er stuen")
 
     if b["vaer"] is None:
         gul = True
