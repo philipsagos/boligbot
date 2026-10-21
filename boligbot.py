@@ -236,22 +236,35 @@ def adresse_fra_link(url):
     return f"{vej} {nr}, {m['etage']}. {m['side']}, {m['pn']} {m['by'].replace('-', ' ').title()}"
 
 
-def render_side(url):
+def render_sider(urls):
+    """Åbner en eller flere sider i én usynlig browser og returnerer HTML for hver."""
     from playwright.sync_api import sync_playwright
+    resultat = {}
     with sync_playwright() as p:
         browser = p.chromium.launch()
         side = browser.new_page(user_agent=HEADERS["User-Agent"], locale="da-DK")
-        side.goto(url, wait_until="networkidle", timeout=60000)
-        for _ in range(6):   # scroll for at få alle boliger indlæst
-            side.mouse.wheel(0, 4000)
-            side.wait_for_timeout(700)
-        indhold = side.content()
+        for url in urls:
+            try:
+                side.goto(url, wait_until="networkidle", timeout=60000)
+                for _ in range(6):   # scroll for at få alle boliger indlæst
+                    side.mouse.wheel(0, 4000)
+                    side.wait_for_timeout(700)
+                resultat[url] = side.content()
+            except Exception as ex:  # noqa: BLE001
+                print(f"  kunne ikke åbne {url}: {ex}")
         browser.close()
-    return indhold
+    return resultat
 
 
-def generisk_liste(kilde, url):
-    soup = BeautifulSoup(render_side(url), "html.parser")
+def render_side(url):
+    html_ = render_sider([url]).get(url)
+    if html_ is None:
+        raise RuntimeError(f"kunne ikke åbne {url}")
+    return html_
+
+
+def generisk_liste(kilde, url, html_=None, debug=True):
+    soup = BeautifulSoup(html_ if html_ is not None else render_side(url), "html.parser")
     vaert = re.match(r"https?://[^/]+", url).group(0)
     boliger = {}
     for a in soup.find_all("a", href=True):
@@ -292,7 +305,7 @@ def generisk_liste(kilde, url):
             "ledig": None,
             "tidsbegraenset": bool(re.search(r"tidsbegr[æa]ns", t, re.I)),
         }
-    if not boliger:
+    if not boliger and debug:
         # Hjælp til fejlfinding: vis hvad siden faktisk indeholdt
         print(f"  [debug {kilde}] sidens tekst: {soup.get_text(' ', strip=True)[:1500]}")
         links = sorted({a['href'] for a in soup.find_all('a', href=True)})[:60]
@@ -308,11 +321,46 @@ def heimstaden_liste():
     return generisk_liste("Heimstaden", "https://www.heimstaden.dk/lejeboliger/koebenhavn/")
 
 
+CEJ_OVERBLIK = "https://udlejning.cej.dk/find-bolig/overblik?collection=projects&monthlyPrice=0-50000"
+CEJ_IKKE_EJENDOM = re.compile(r"/(find-bolig/(overblik|kort|filtrer)|om-os|ofte-stillede|kontakt|cookie|privat)", re.I)
+
+
+def cej_liste():
+    """CEJ viser ejendomme først — botten åbner hver ejendom og læser lejlighederne."""
+    vaert = "https://udlejning.cej.dk"
+    soup = BeautifulSoup(render_side(CEJ_OVERBLIK), "html.parser")
+    ejendomme = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href.startswith("/"):
+            href = vaert + href
+        if not href.startswith(vaert) or CEJ_IKKE_EJENDOM.search(href) or href.rstrip("/") == vaert:
+            continue
+        if href not in ejendomme:
+            ejendomme.append(href)
+    print(f"  CEJ: {len(ejendomme)} ejendomme fundet: {ejendomme[:20]}")
+    if not ejendomme:
+        print(f"  [debug CEJ] sidens tekst: {soup.get_text(' ', strip=True)[:1500]}")
+        return []
+    boliger = {}
+    for url, html_ in render_sider(ejendomme[:25]).items():
+        fundet = generisk_liste("CEJ", url, html_=html_, debug=False)
+        if not fundet:
+            print(f"  [debug CEJ] ingen lejligheder læst på {url}: "
+                  f"{BeautifulSoup(html_, 'html.parser').get_text(' ', strip=True)[:600]}")
+        for b in fundet:
+            if CEJ_IKKE_EJENDOM.search(b["url"]) or b["url"] in ejendomme:
+                continue   # spring links tilbage til oversigten/andre ejendomme over
+            boliger[b["url"]] = b
+    return list(boliger.values())
+
+
 KILDER = [
     ("Kereby", kereby_liste, kereby_detaljer),
     ("City Apartment", cityapartment_liste, None),
     ("Balder", balder_liste, None),
     ("Heimstaden", heimstaden_liste, None),
+    ("CEJ", cej_liste, None),
 ]
 
 
