@@ -22,8 +22,8 @@ from bs4 import BeautifulSoup
 # =====================================================================
 #  KRITERIER — ret her
 # =====================================================================
-MAX_LEJE_GROEN = 12000      # kr./md. INKL. aconto -> grønt match
-MAX_LEJE_GUL = 12500        # kr./md. INKL. aconto -> næsten-match
+MAX_LEJE_GROEN = 13000      # kr./md. INKL. aconto -> grønt match
+MAX_LEJE_GUL = 13500        # kr./md. INKL. aconto -> næsten-match
 MIN_M2 = 50
 MIN_M2_GUL = 48             # 48–49 m² giver næsten-match
 MIN_VAERELSER = 2
@@ -32,6 +32,7 @@ ACONTO_SKOEN = 800          # bruges når annoncen ikke oplyser aconto
 # Postnumre -> område
 OMRAADER = {
     "Sydhavn": [2450],
+    "Amager": [2300, 2770],                      # København S/Ørestad + Kastrup
     "Nørrebro": [2200],
     "Vesterbro": list(range(1550, 1800)),        # København V
     "Frederiksberg": list(range(1800, 2001)),    # Frederiksberg C + 2000
@@ -398,13 +399,14 @@ def send_telegram(tekst):
     if not token or not chat:
         print("[ingen Telegram-opsætning]\n" + tekst + "\n")
         return
-    r = requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat, "text": tekst, "parse_mode": "HTML", "disable_web_page_preview": False},
-        timeout=TIMEOUT,
-    )
-    if not r.ok:
-        print("Telegram-fejl:", r.status_code, r.text)
+    for chat_id in [c.strip() for c in chat.split(",") if c.strip()]:   # flere modtagere: "123,456"
+        r = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": tekst, "parse_mode": "HTML", "disable_web_page_preview": False},
+            timeout=TIMEOUT,
+        )
+        if not r.ok:
+            print("Telegram-fejl:", chat_id, r.status_code, r.text)
 
 
 def formater(b, status, noter):
