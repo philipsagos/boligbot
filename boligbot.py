@@ -349,16 +349,32 @@ def cej_liste():
             try:
                 side.goto(url, wait_until="networkidle", timeout=60000)
                 titel = side.title()
-                tekst = side.inner_text("body")[:800]
-                if not re.search(r"København|Frederiksberg|Valby|Kastrup|\b(1\d{3}|2[0-5]\d{2}|2770)\b", titel + " " + tekst):
+                tekst = side.inner_text("body")
+                # Byen står lige før den første "Se ledige boliger"
+                hoved = titel + " " + re.split(r"Se ledige boliger", tekst, flags=re.I)[0][-300:]
+                if not re.search(r"København|Frederiksberg|Valby|Kastrup", hoved):
                     print(f"  CEJ: springer over (uden for København): {titel.split('|')[0].strip()}")
                     continue
-                knap = side.get_by_text(re.compile(r"Se ledige boliger", re.I)).first
-                if knap.count() == 0:
+                # Find knappen/linket der faktisk er synligt (siden har en skjult mobil-udgave)
+                mål = side.evaluate("""() => {
+                    const els = [...document.querySelectorAll('a,button,span,div')]
+                      .filter(e => /se ledige boliger/i.test(e.textContent || '') && e.children.length <= 2);
+                    for (const e of els) {
+                        const a = e.closest('a[href]');
+                        if (a) return {href: a.href};
+                    }
+                    const synlig = els.find(e => e.offsetParent !== null) || els[0];
+                    if (!synlig) return null;
+                    (synlig.closest('button') || synlig).click();
+                    return {klik: true};
+                }""")
+                if not mål:
                     print(f"  [debug CEJ] ingen 'Se ledige boliger'-knap på {url}")
                     continue
-                knap.click()
-                side.wait_for_load_state("networkidle", timeout=30000)
+                if mål.get("href"):
+                    side.goto(mål["href"], wait_until="networkidle", timeout=60000)
+                else:
+                    side.wait_for_load_state("networkidle", timeout=30000)
                 side.wait_for_timeout(1500)
                 for _ in range(6):
                     side.mouse.wheel(0, 4000)
@@ -386,7 +402,7 @@ KILDER = [
     ("City Apartment", cityapartment_liste, None),
     ("Balder", balder_liste, None),
     ("Heimstaden", heimstaden_liste, None),
-    ("CEJ", cej_liste, None),
+    # ("CEJ", cej_liste, None),   # slået fra
 ]
 
 
