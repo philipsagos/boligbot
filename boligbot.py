@@ -15,6 +15,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -268,9 +269,7 @@ def generisk_liste(kilde, url, html_=None, debug=True):
     vaert = re.match(r"https?://[^/]+", url).group(0)
     boliger = {}
     for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if href.startswith("/"):
-            href = vaert + href
+        href = urljoin(url, a["href"]).split("#")[0]
         if not href.startswith(vaert) or href.rstrip("/") == url.rstrip("/"):
             continue
         node, kort = a, None
@@ -322,11 +321,12 @@ def heimstaden_liste():
 
 
 CEJ_OVERBLIK = "https://udlejning.cej.dk/find-bolig/overblik?collection=projects&monthlyPrice=0-50000"
-CEJ_IKKE_EJENDOM = re.compile(r"/(find-bolig/(overblik|kort|filtrer)|om-os|ofte-stillede|kontakt|cookie|privat)", re.I)
 
 
 def cej_liste():
-    """CEJ viser ejendomme først — botten åbner hver ejendom og læser lejlighederne."""
+    """CEJ viser ejendomme først. Botten åbner hver københavnsk ejendom,
+    trykker 'Se ledige boliger' og læser lejlighederne."""
+    from playwright.sync_api import sync_playwright
     vaert = "https://udlejning.cej.dk"
     soup = BeautifulSoup(render_side(CEJ_OVERBLIK), "html.parser")
     ejendomme = []
@@ -334,24 +334,50 @@ def cej_liste():
         href = a["href"]
         if href.startswith("/"):
             href = vaert + href
-        if not href.startswith(vaert) or CEJ_IKKE_EJENDOM.search(href) or href.rstrip("/") == vaert:
-            continue
-        if href not in ejendomme:
+        if "/ejendomme/" in href and href not in ejendomme:
             ejendomme.append(href)
-    print(f"  CEJ: {len(ejendomme)} ejendomme fundet: {ejendomme[:20]}")
+    print(f"  CEJ: {len(ejendomme)} ejendomme fundet")
     if not ejendomme:
         print(f"  [debug CEJ] sidens tekst: {soup.get_text(' ', strip=True)[:1500]}")
         return []
+
     boliger = {}
-    for url, html_ in render_sider(ejendomme[:25]).items():
-        fundet = generisk_liste("CEJ", url, html_=html_, debug=False)
-        if not fundet:
-            print(f"  [debug CEJ] ingen lejligheder læst på {url}: "
-                  f"{BeautifulSoup(html_, 'html.parser').get_text(' ', strip=True)[:600]}")
-        for b in fundet:
-            if CEJ_IKKE_EJENDOM.search(b["url"]) or b["url"] in ejendomme:
-                continue   # spring links tilbage til oversigten/andre ejendomme over
-            boliger[b["url"]] = b
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        side = browser.new_page(user_agent=HEADERS["User-Agent"], locale="da-DK")
+        for url in ejendomme[:25]:
+            try:
+                side.goto(url, wait_until="networkidle", timeout=60000)
+                titel = side.title()
+                tekst = side.inner_text("body")[:800]
+                if not re.search(r"København|Frederiksberg|Valby|Kastrup|\b(1\d{3}|2[0-5]\d{2}|2770)\b", titel + " " + tekst):
+                    print(f"  CEJ: springer over (uden for København): {titel.split('|')[0].strip()}")
+                    continue
+                knap = side.get_by_text(re.compile(r"Se ledige boliger", re.I)).first
+                if knap.count() == 0:
+                    print(f"  [debug CEJ] ingen 'Se ledige boliger'-knap på {url}")
+                    continue
+                knap.click()
+                side.wait_for_load_state("networkidle", timeout=30000)
+                side.wait_for_timeout(1500)
+                for _ in range(6):
+                    side.mouse.wheel(0, 4000)
+                    side.wait_for_timeout(600)
+                nu_url = side.url
+                html_ = side.content()
+            except Exception as ex:  # noqa: BLE001
+                print(f"  CEJ: kunne ikke læse {url}: {ex}")
+                continue
+            fundet = [b for b in generisk_liste("CEJ", nu_url, html_=html_, debug=False)
+                      if b["url"].rstrip("/") not in {e.rstrip("/") for e in ejendomme}]
+            print(f"  CEJ: {titel.split('|')[0].strip()} -> {len(fundet)} lejligheder (side: {nu_url})")
+            if not fundet:
+                bs = BeautifulSoup(html_, "html.parser")
+                print(f"  [debug CEJ] tekst: {bs.get_text(' ', strip=True)[:1200]}")
+                print(f"  [debug CEJ] links: {sorted({a['href'] for a in bs.find_all('a', href=True)})[:40]}")
+            for b in fundet:
+                boliger[b["url"]] = b
+        browser.close()
     return list(boliger.values())
 
 
