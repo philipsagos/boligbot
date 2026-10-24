@@ -2,9 +2,9 @@
  "fejl": {
   "Balder": 0,
   "CEJ": 4,
-  "City Apartment": 0,
-  "Heimstaden": 1,
-  "Kereby": 0
+  "City Apartment": 1,
+  "Heimstaden": 0,
+  "Kereby": 1
  },
  "set": {
   "https://cityapartment.dk/cityapartments/bronzebakken-82/": "2026-10-21 10:56",
