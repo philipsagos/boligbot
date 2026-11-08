@@ -400,11 +400,75 @@ def cej_liste():
     return list(boliger.values())
 
 
+# ---------------------------------------------------------------------
+#  EDC LEJEBOLIG — nyeste boliger står øverst, så vi læser kun de første sider
+# ---------------------------------------------------------------------
+SETTE_URLS = set()   # udfyldes af koer() med de boliger botten allerede har set
+
+EDC_LISTER = [
+    ("https://www.edc.dk/lejebolig/lejlighed/koebenhavn/", 6),   # (adresse, maks. sider pr. kørsel)
+    ("https://www.edc.dk/lejebolig/1800-1999-frederiksberg-c/", 2),
+    ("https://www.edc.dk/lejebolig/2000-frederiksberg/", 2),
+    ("https://www.edc.dk/lejebolig/2770-kastrup/", 1),
+]
+EDC_LINK_RE = re.compile(r"^(?:https?://(?:www\.)?edc\.dk)?(/leje/[a-z-]+/[^/]+/[^/]+/\d+)/?$")
+
+
+def edc_side(url):
+    soup = BeautifulSoup(hent(url), "html.parser")
+    boliger = {}
+    for a in soup.find_all("a", href=True):
+        m = EDC_LINK_RE.match(a["href"])
+        if not m:
+            continue
+        link = "https://www.edc.dk" + m.group(1) + "/"
+        if link in boliger:
+            continue
+        kort = find_kort(a, "kr./md")
+        if kort is None:
+            continue
+        t = kort.get_text(" ", strip=True)
+        if re.search(r"\b(Reserveret|Udlejet)\b", t):
+            continue
+        t_adr = re.sub(r"\b(Nyhed|Åbent hus[^A-ZÆØÅ]*|[A-ZÆØÅa-zæøå]+ fra \S+)", " ", t)
+        adr = re.search(r"([A-ZÆØÅ][^\d]{1,60}?\s\d+[A-Za-z]?(?:,\s*[^,]{1,15}?)?)\s+(\d{4})\s+([A-ZÆØÅ][A-Za-zÆØÅæøå. ]+?)\s+\d+\s*rum", t_adr)
+        boliger[link] = {
+            "kilde": "EDC",
+            "url": link,
+            "adresse": f"{adr.group(1).strip()}, {adr.group(2)} {adr.group(3).strip()}" if adr else adresse_fra_link(link),
+            "postnr": int(adr.group(2)) if adr else (int(p.group(1)) if (p := re.search(r"/leje/[a-z-]+/(\d{4})-", link)) else None),
+            "leje": tal(l.group(1)) if (l := re.search(r"([\d.]+)\s*kr\./md", t)) else None,
+            "aconto": None,
+            "vaer": int(v.group(1)) if (v := re.search(r"(\d+)\s*rum", t)) else None,
+            "m2": int(k.group(1)) if (k := re.search(r"(\d+)\s*m²", t)) else None,
+            "altan": bool(re.search(r"\baltan", t, re.I)),
+            "ledig": None,
+            "tidsbegraenset": bool(re.search(r"tidsbegr[æa]ns", t, re.I)),
+        }
+    return list(boliger.values())
+
+
+def edc_liste():
+    alle = {}
+    for base, maks in EDC_LISTER:
+        for side_nr in range(1, maks + 1):
+            url = base if side_nr == 1 else f"{base}?side={side_nr}"
+            fundet = edc_side(url)
+            time.sleep(1)
+            for b in fundet:
+                alle[b["url"]] = b
+            # Stop når en hel side kun indeholder boliger vi har set før
+            if not fundet or all(b["url"] in SETTE_URLS for b in fundet):
+                break
+    return list(alle.values())
+
+
 KILDER = [
     ("Kereby", kereby_liste, kereby_detaljer),
     ("City Apartment", cityapartment_liste, None),
     ("Balder", balder_liste, None),
     ("Heimstaden", heimstaden_liste, None),
+    ("EDC", edc_liste, None),
     # ("CEJ", cej_liste, None),   # slået fra
 ]
 
@@ -550,6 +614,8 @@ def gem_state(state):
 
 def koer(test=False):
     state = indlaes_state()
+    SETTE_URLS.clear()
+    SETTE_URLS.update(state["set"].keys())
     foerste_gang = not state["set"]
     nu = time.strftime("%Y-%m-%d %H:%M")
     fundet_noget = 0
