@@ -39,6 +39,9 @@ OMRAADER = {
     "Frederiksberg": list(range(1800, 2001)),    # Frederiksberg C + 2000
     "Østerbro": [2100, 2150],
     "Valby": [2500],
+    "Nordvest": [2400],
+    "Vanløse": [2720],
+    "Indre By": list(range(1000, 1550)),         # hele København K
 }
 
 # =====================================================================
