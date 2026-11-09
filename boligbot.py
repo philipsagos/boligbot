@@ -566,6 +566,148 @@ def send_telegram(tekst):
             print("Telegram-fejl:", chat_id, r.status_code, r.text)
 
 
+def ansoegningstekst(b):
+    return ANSOEGNING.format(
+        adresse=b["adresse"].split(",")[0] if b["adresse"] else "jeres annonce",
+        om_os=("\n" + OM_OS + "\n") if OM_OS else "",
+        altan=" Ikke mindst altanen er et stort plus for os." if b["altan"] else "",
+        telefon=TELEFON,
+        email=EMAIL,
+    )
+
+
+# ---------------------------------------------------------------------
+#  AUTOMATISK BOOKING AF FREMVISNING PÅ KEREBY
+#  KEREBY_AUTOBOOK = "test"  -> udfylder formularen men sender IKKE (til afprøvning)
+#  KEREBY_AUTOBOOK = "til"   -> sender forespørgslen på grønne match
+#  ikke sat / andet          -> slået fra
+# ---------------------------------------------------------------------
+AUTOBOOK = os.getenv("KEREBY_AUTOBOOK", "").strip().lower()
+NAVN = os.getenv("ANSOEGER_NAVN", "Philip og Katrine")
+MAKS_BOOKINGER_PR_DOEGN = 3
+
+FYLD_FORMULAR_JS = r"""(data) => {
+  const synlig = e => { const r = e.getBoundingClientRect(); const st = getComputedStyle(e);
+      return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
+  const etiket = e => {
+      let t = (e.name || '') + ' ' + (e.id || '') + ' ' + (e.placeholder || '') + ' ' + (e.getAttribute('aria-label') || '');
+      if (e.id) { const l = document.querySelector(`label[for="${e.id}"]`); if (l) t += ' ' + l.textContent; }
+      const l2 = e.closest('label'); if (l2) t += ' ' + l2.textContent;
+      const p = e.parentElement;   // brug kun forælderens tekst hvis den er kort (ellers er det hele formularen)
+      if (t.trim().length < 3 && p && p.textContent.length < 120) t += ' ' + p.textContent;
+      return t.toLowerCase(); };
+  const saet = (e, v) => { const proto = e.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(e, v);
+      e.dispatchEvent(new Event('input', {bubbles: true})); e.dispatchEvent(new Event('change', {bubbles: true})); };
+  const rapport = [];
+  for (const e of document.querySelectorAll('input, textarea, select')) {
+      if (!synlig(e)) continue;
+      const t = etiket(e), type = (e.type || '').toLowerCase();
+      const r = e.getBoundingClientRect();
+      if (r.right < 0 || r.bottom < 0) continue;   // gemt uden for skærmen = fælde
+      if (/udfyld ikke|honeypot|leave.*empty/.test(t) || type === 'hidden' || type === 'submit' || type === 'search') continue;
+      let v = null;
+      if (type === 'checkbox') {
+          if (/accept|privat|samtyk|vilkår|betingelse|gdpr|persondata/.test(t)) { if (!e.checked) e.click(); rapport.push('☑ ' + t.slice(0, 60)); }
+          else rapport.push('☐ (rørt ikke) ' + t.slice(0, 60));
+          continue;
+      }
+      if (type === 'email' || /mail/.test(t)) v = data.email;
+      else if (type === 'tel' || /telefon|phone|mobil|tlf/.test(t)) v = data.telefon;
+      else if (e.tagName === 'TEXTAREA' || /besked|message|kommentar/.test(t)) v = data.besked;
+      else if (/efternavn|last.?name/.test(t)) v = data.efternavn;
+      else if (/fornavn|first.?name/.test(t)) v = data.fornavn;
+      else if (/navn|name/.test(t)) v = data.navn;
+      if (v !== null) { saet(e, v); rapport.push('✎ ' + t.slice(0, 50).replace(/\s+/g, ' ') + ' = ' + v.slice(0, 30)); }
+      else rapport.push('? ukendt felt: ' + type + ' ' + t.slice(0, 60).replace(/\s+/g, ' '));
+  }
+  return rapport;
+}"""
+
+KLIK_TEKST_JS = r"""(regex) => {
+  const re = new RegExp(regex, 'i');
+  const synlig = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== 'hidden'; };
+  const kandidater = [...document.querySelectorAll('a, button, input[type=submit], [role=button]')]
+      .filter(e => re.test((e.textContent || e.value || '').trim()) && synlig(e));
+  if (!kandidater.length) return null;
+  const e = kandidater[kandidater.length - 1];
+  e.scrollIntoView({block: 'center'}); e.click();
+  return (e.textContent || e.value || '').trim().slice(0, 40);
+}"""
+
+VAELG_TID_JS = r"""(vaelg) => {
+  // Finder synlige, klikbare tidspunkter (fx "16:30", "kl. 17.00") og vælger det første ledige
+  const synlig = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== 'hidden'; };
+  const tid = /\b([01]?\d|2[0-3])[:.][0-5]\d\b/;
+  const kandidater = [...document.querySelectorAll('button, a, [role=button], [role=option], label, li, td, div')]
+      .filter(e => synlig(e) && e.children.length <= 3 && tid.test(e.textContent || '') && (e.textContent || '').trim().length < 60)
+      .filter(e => !e.disabled && e.getAttribute('aria-disabled') !== 'true' && !/disabled|optaget|booked|full|udsolgt/i.test(e.className + ' ' + e.textContent));
+  // fjern forældre der blot indeholder et andet tidspunkt
+  const blade = kandidater.filter(e => !kandidater.some(k => k !== e && e.contains(k)));
+  const tekster = blade.map(e => e.textContent.trim().replace(/\s+/g, ' ')).slice(0, 10);
+  if (vaelg && blade.length) {
+      const e = blade[0]; e.scrollIntoView({block: 'center'});
+      (e.closest('button, a, [role=button], [role=option], label') || e).click();
+      const radio = e.querySelector('input[type=radio]') || (e.closest('label') && e.closest('label').querySelector('input[type=radio]'));
+      if (radio && !radio.checked) radio.click();
+      return {valgt: tekster[0], alle: tekster};
+  }
+  return {valgt: null, alle: tekster};
+}"""
+
+
+def kereby_book(b, send=False):
+    """Åbner boligen, trykker 'Book fremvisning' og udfylder formularen.
+    Returnerer (lykkedes: bool, forklaring: str)."""
+    from playwright.sync_api import sync_playwright
+    fornavn, _, efternavn = NAVN.partition(" ")
+    data = {"navn": NAVN, "fornavn": fornavn, "efternavn": efternavn or fornavn,
+            "email": EMAIL, "telefon": TELEFON, "besked": ansoegningstekst(b)}
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        side = browser.new_page(user_agent=HEADERS["User-Agent"], locale="da-DK")
+        try:
+            side.goto(b["url"], wait_until="networkidle", timeout=45000)
+            side.evaluate(KLIK_TEKST_JS, r"^(accepter|tillad|godkend|ok)( alle)?")   # cookie-banner
+            side.wait_for_timeout(500)
+            if re.search(r"\b(Reserveret|Udlejet)\b", side.inner_text("body")[:3000]):
+                return False, "boligen er allerede reserveret"
+            if not side.evaluate(KLIK_TEKST_JS, r"book fremvisning"):
+                return False, "fandt ingen 'Book fremvisning'-knap"
+            side.wait_for_timeout(2000)
+            # Kalender? Vælg første ledige tidspunkt
+            tider = side.evaluate(VAELG_TID_JS, True)   # at vælge en tid sender intet; det gør kun "bekræft"
+            valgt_tid = tider.get("valgt")
+            if tider.get("alle"):
+                print(f"  [booking] tidspunkter set: {tider['alle']}" + (f" -> valgte {valgt_tid}" if valgt_tid else ""))
+                if valgt_tid:
+                    side.wait_for_timeout(1500)
+                    side.evaluate(KLIK_TEKST_JS, r"^(næste|videre|fortsæt|vælg|continue|next)$")
+                    side.wait_for_timeout(1500)
+            rapport = side.evaluate(FYLD_FORMULAR_JS, data)
+            print("  [booking] felter:\n    " + "\n    ".join(rapport or ["(ingen synlige felter)"]))
+            if not any(r.startswith("✎") and "@" in r for r in rapport):
+                return False, "fandt ikke formularen (intet e-mail-felt)"
+            if not send:
+                knap = side.evaluate(r"""() => [...document.querySelectorAll('button, input[type=submit]')]
+                    .filter(e => e.getBoundingClientRect().width > 0).map(e => (e.textContent||e.value).trim()).filter(Boolean).slice(-6)""")
+                tidstekst = f" Ledige tidspunkter: {tider['alle'][:5]}." if tider.get("alle") else " Ingen kalender fundet."
+                return True, f"TEST: formularen er udfyldt men IKKE sendt.{tidstekst} Synlige knapper: {knap}"
+            klikket = side.evaluate(KLIK_TEKST_JS, r"^(send|book|bekræft|anmod|indsend|tilmeld)")
+            if not klikket:
+                side.evaluate("() => { const f = [...document.querySelectorAll('form')].find(f => f.querySelector('input[type=email]')); if (f) f.requestSubmit(); }")
+                klikket = "(formularen sendt)"
+            side.wait_for_timeout(4000)
+            tekst = side.inner_text("body")
+            if re.search(r"tak for|modtaget|bekræft|booket|vi kontakter|vi vender tilbage|sendt", tekst, re.I):
+                return True, (f"tid: {valgt_tid}" if valgt_tid else f"forespørgsel sendt ('{klikket}')")
+            return False, f"trykkede '{klikket}', men så ingen bekræftelse — tjek selv"
+        except Exception as ex:  # noqa: BLE001
+            return False, f"fejl: {str(ex)[:150]}"
+        finally:
+            browser.close()
+
+
 def formater(b, status, noter):
     e = html.escape
     ikon = "🟢 MATCH" if status == "groen" else "🟡 NÆSTEN-MATCH"
@@ -585,13 +727,7 @@ def formater(b, status, noter):
         linjer.append("⚠️ " + e("; ".join(noter)))
     linjer.append(f"\n👉 {e(b['url'])}")
 
-    besked = ANSOEGNING.format(
-        adresse=adresse.split(",")[0] if b["adresse"] else "jeres annonce",
-        om_os=("\n" + OM_OS + "\n") if OM_OS else "",
-        altan=" Ikke mindst altanen er et stort plus for os." if b["altan"] else "",
-        telefon=TELEFON,
-        email=EMAIL,
-    )
+    besked = ansoegningstekst(b)
     linjer.append("\n📋 Tryk på teksten for at kopiere:\n<code>" + e(besked) + "</code>")
     return "\n".join(linjer)
 
@@ -642,6 +778,19 @@ def koer(test=False):
         state["fejl"][navn] = 0
         print(f"{navn}: {len(boliger)} ledige boliger")
 
+        if navn == "Kereby" and AUTOBOOK == "test" and not test:
+            proeve = boliger[0]
+            try:
+                kereby_detaljer(proeve)
+            except Exception:  # noqa: BLE001
+                pass
+            ok, forklaring = kereby_book(proeve, send=False)
+            print(f"  [booking-test på {proeve['url']}] {forklaring}")
+            if not state.get("booking_test_sendt"):
+                send_telegram(f"🧪 <b>Booking-test på Kereby</b> ({html.escape(proeve['url'])})\n"
+                              f"{'✅' if ok else '❌'} {html.escape(forklaring)}\n\nIntet er sendt til Kereby.")
+                state["booking_test_sendt"] = True
+
         for b in boliger:
             if b["url"] in state["set"] and not test:
                 continue
@@ -662,8 +811,27 @@ def koer(test=False):
 
             if status in ("groen", "gul"):
                 fundet_noget += 1
+                booking_linje = ""
+                if b["kilde"] == "Kereby" and status == "groen" and AUTOBOOK in ("til", "test") and not test:
+                    idag = time.strftime("%Y-%m-%d")
+                    bookinger = state.setdefault("bookinger", {})
+                    if AUTOBOOK == "til" and bookinger.get(idag, 0) >= MAKS_BOOKINGER_PR_DOEGN:
+                        booking_linje = "⏸ Automatisk booking sprunget over (maks. pr. døgn nået) — book selv!"
+                    else:
+                        ok, forklaring = kereby_book(b, send=(AUTOBOOK == "til"))
+                        print(f"  [booking] {forklaring}")
+                        if AUTOBOOK == "til" and ok:
+                            bookinger[idag] = bookinger.get(idag, 0) + 1
+                            booking_linje = f"✅ FREMVISNING BOOKET AUTOMATISK — {forklaring}"
+                        elif AUTOBOOK == "til":
+                            booking_linje = f"❗ Automatisk booking mislykkedes ({forklaring}) — BOOK SELV NU!"
+                        else:
+                            booking_linje = f"🧪 Booking-test: {forklaring}"
                 if not test:
-                    send_telegram(formater(b, status, noter))
+                    besked = formater(b, status, noter)
+                    if booking_linje:
+                        besked = f"<b>{html.escape(booking_linje)}</b>\n\n" + besked
+                    send_telegram(besked)
             if not test:
                 state["set"][b["url"]] = nu
 
@@ -675,7 +843,15 @@ def koer(test=False):
 
 
 if __name__ == "__main__":
-    if "--test" in sys.argv:
+    if "--proev-booking" in sys.argv:
+        url = sys.argv[sys.argv.index("--proev-booking") + 1]
+        b = {"kilde": "Kereby", "url": url, "adresse": None, "altan": False}
+        try:
+            kereby_detaljer(b)
+        except Exception as ex:  # noqa: BLE001
+            print("kunne ikke læse detaljer:", ex)
+        print(kereby_book(b, send=False))
+    elif "--test" in sys.argv:
         koer(test=True)
     elif "--loop" in sys.argv:
         while True:
