@@ -656,8 +656,52 @@ VAELG_TID_JS = r"""(vaelg) => {
 }"""
 
 
+HAR_EMAIL_JS = r"""() => [...document.querySelectorAll('input')].some(e => {
+    const r = e.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && (e.type === 'email' || /mail/i.test((e.name||'') + (e.id||'') + (e.placeholder||'')));
+})"""
+HAR_TIDER_JS = r"""() => /\b([01]?\d|2[0-3])[:.][0-5]\d\b/.test(document.body ? document.body.innerText : '')"""
+
+
+def _find_formular_ramme(side, sekunder=10):
+    """Leder i siden og alle indlejrede rammer (iframes) efter formularen/kalenderen."""
+    for _ in range(sekunder * 2):
+        for ramme in side.frames:
+            try:
+                if ramme.evaluate(HAR_EMAIL_JS):
+                    return ramme
+            except Exception:  # noqa: BLE001
+                pass
+        side.wait_for_timeout(500)
+    # ingen e-mail-felt: tag en ramme med tidspunkter (kalender), ellers hovedsiden
+    for ramme in side.frames:
+        try:
+            if ramme != side.main_frame and ramme.evaluate(HAR_TIDER_JS):
+                return ramme
+        except Exception:  # noqa: BLE001
+            pass
+    return side.main_frame
+
+
+def _beskriv(side):
+    """Kort beskrivelse af hvad der er på skærmen — til fejlfinding."""
+    dele = []
+    try:
+        rammer = [f.url[:80] for f in side.frames if f != side.main_frame and f.url not in ("about:blank", "")]
+        if rammer:
+            dele.append(f"rammer: {rammer[:4]}")
+        knapper = side.evaluate(r"""() => [...document.querySelectorAll('a, button, [role=button]')]
+            .filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.top < innerHeight && r.bottom > 0; })
+            .map(e => (e.textContent||'').trim().replace(/\s+/g,' ')).filter(t => t && t.length < 40).slice(0, 15)""")
+        dele.append(f"synlige knapper: {knapper}")
+        dele.append(f"adresse nu: {side.url[:100]}")
+    except Exception as ex:  # noqa: BLE001
+        dele.append(f"(kunne ikke beskrive siden: {ex})")
+    return " | ".join(dele)
+
+
 def kereby_book(b, send=False):
-    """Åbner boligen, trykker 'Book fremvisning' og udfylder formularen.
+    """Åbner boligen, trykker 'Book fremvisning', vælger evt. tidspunkt og udfylder formularen.
     Returnerer (lykkedes: bool, forklaring: str)."""
     from playwright.sync_api import sync_playwright
     fornavn, _, efternavn = NAVN.partition(" ")
@@ -665,40 +709,71 @@ def kereby_book(b, send=False):
             "email": EMAIL, "telefon": TELEFON, "besked": ansoegningstekst(b)}
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        side = browser.new_page(user_agent=HEADERS["User-Agent"], locale="da-DK")
+        kontekst = browser.new_context(user_agent=HEADERS["User-Agent"], locale="da-DK",
+                                       viewport={"width": 1366, "height": 900})
+        side = kontekst.new_page()
         try:
             side.goto(b["url"], wait_until="networkidle", timeout=45000)
             side.evaluate(KLIK_TEKST_JS, r"^(accepter|tillad|godkend|ok)( alle)?")   # cookie-banner
-            side.wait_for_timeout(500)
+            side.wait_for_timeout(800)
             if re.search(r"\b(Reserveret|Udlejet)\b", side.inner_text("body")[:3000]):
                 return False, "boligen er allerede reserveret"
+            antal_sider = len(kontekst.pages)
             if not side.evaluate(KLIK_TEKST_JS, r"book fremvisning"):
-                return False, "fandt ingen 'Book fremvisning'-knap"
-            side.wait_for_timeout(2000)
-            # Kalender? Vælg første ledige tidspunkt
-            tider = side.evaluate(VAELG_TID_JS, True)   # at vælge en tid sender intet; det gør kun "bekræft"
+                return False, "fandt ingen 'Book fremvisning'-knap. " + _beskriv(side)
+            side.wait_for_timeout(2500)
+            if len(kontekst.pages) > antal_sider:       # åbnede i nyt vindue/fane
+                side = kontekst.pages[-1]
+                side.wait_for_load_state("networkidle", timeout=30000)
+                print(f"  [booking] åbnede nyt vindue: {side.url}")
+            try:
+                side.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:  # noqa: BLE001
+                pass
+
+            ramme = _find_formular_ramme(side)
+            # Ingen formular/kalender endnu? Tryk "Book fremvisning" igen inde i den nye ramme/det nye vindue
+            if not ramme.evaluate(HAR_EMAIL_JS) and not ramme.evaluate(HAR_TIDER_JS):
+                for f in [f for f in side.frames if f != side.main_frame] + [side.main_frame]:
+                    try:
+                        if f.evaluate(KLIK_TEKST_JS, r"book fremvisning|book en tid|vælg tid|se ledige tider"):
+                            print(f"  [booking] trykkede igen i {f.url[:80]}")
+                            side.wait_for_timeout(2500)
+                            break
+                    except Exception:  # noqa: BLE001
+                        pass
+                ramme = _find_formular_ramme(side, sekunder=6)
+            if ramme != side.main_frame:
+                print(f"  [booking] formularen ligger i en indlejret ramme: {ramme.url[:100]}")
+
+            # Kalender? Vælg første ledige tidspunkt (at vælge en tid sender intet — det gør kun "bekræft")
+            tider = ramme.evaluate(VAELG_TID_JS, True)
             valgt_tid = tider.get("valgt")
             if tider.get("alle"):
                 print(f"  [booking] tidspunkter set: {tider['alle']}" + (f" -> valgte {valgt_tid}" if valgt_tid else ""))
                 if valgt_tid:
                     side.wait_for_timeout(1500)
-                    side.evaluate(KLIK_TEKST_JS, r"^(næste|videre|fortsæt|vælg|continue|next)$")
+                    ramme.evaluate(KLIK_TEKST_JS, r"^(næste|videre|fortsæt|vælg|continue|next)$")
                     side.wait_for_timeout(1500)
-            rapport = side.evaluate(FYLD_FORMULAR_JS, data)
+                    ramme = _find_formular_ramme(side, sekunder=6)
+
+            rapport = ramme.evaluate(FYLD_FORMULAR_JS, data)
             print("  [booking] felter:\n    " + "\n    ".join(rapport or ["(ingen synlige felter)"]))
             if not any(r.startswith("✎") and "@" in r for r in rapport):
-                return False, "fandt ikke formularen (intet e-mail-felt)"
+                beskrivelse = _beskriv(side)
+                print(f"  [booking] skærmen efter klik: {side.inner_text('body')[:1000]!r}")
+                return False, "fandt ikke formularen (intet e-mail-felt). " + beskrivelse
             if not send:
-                knap = side.evaluate(r"""() => [...document.querySelectorAll('button, input[type=submit]')]
+                knap = ramme.evaluate(r"""() => [...document.querySelectorAll('button, input[type=submit]')]
                     .filter(e => e.getBoundingClientRect().width > 0).map(e => (e.textContent||e.value).trim()).filter(Boolean).slice(-6)""")
                 tidstekst = f" Ledige tidspunkter: {tider['alle'][:5]}." if tider.get("alle") else " Ingen kalender fundet."
                 return True, f"TEST: formularen er udfyldt men IKKE sendt.{tidstekst} Synlige knapper: {knap}"
-            klikket = side.evaluate(KLIK_TEKST_JS, r"^(send|book|bekræft|anmod|indsend|tilmeld)")
+            klikket = ramme.evaluate(KLIK_TEKST_JS, r"^(send|book|bekræft|anmod|indsend|tilmeld)")
             if not klikket:
-                side.evaluate("() => { const f = [...document.querySelectorAll('form')].find(f => f.querySelector('input[type=email]')); if (f) f.requestSubmit(); }")
+                ramme.evaluate("() => { const f = [...document.querySelectorAll('form')].find(f => f.querySelector('input[type=email]')); if (f) f.requestSubmit(); }")
                 klikket = "(formularen sendt)"
             side.wait_for_timeout(4000)
-            tekst = side.inner_text("body")
+            tekst = " ".join(f.evaluate("() => document.body ? document.body.innerText : ''") for f in side.frames)
             if re.search(r"tak for|modtaget|bekræft|booket|vi kontakter|vi vender tilbage|sendt", tekst, re.I):
                 return True, (f"tid: {valgt_tid}" if valgt_tid else f"forespørgsel sendt ('{klikket}')")
             return False, f"trykkede '{klikket}', men så ingen bekræftelse — tjek selv"
@@ -786,10 +861,10 @@ def koer(test=False):
                 pass
             ok, forklaring = kereby_book(proeve, send=False)
             print(f"  [booking-test på {proeve['url']}] {forklaring}")
-            if not state.get("booking_test_sendt"):
+            if not state.get("booking_test_sendt_v2"):
                 send_telegram(f"🧪 <b>Booking-test på Kereby</b> ({html.escape(proeve['url'])})\n"
                               f"{'✅' if ok else '❌'} {html.escape(forklaring)}\n\nIntet er sendt til Kereby.")
-                state["booking_test_sendt"] = True
+                state["booking_test_sendt_v2"] = True
 
         for b in boliger:
             if b["url"] in state["set"] and not test:
