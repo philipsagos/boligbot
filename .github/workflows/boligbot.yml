@@ -43,10 +43,30 @@ jobs:
           ANSOEGER_TELEFON: ${{ secrets.ANSOEGER_TELEFON }}
           ANSOEGER_EMAIL: ${{ secrets.ANSOEGER_EMAIL }}
           ANSOEGER_OM_OS: ${{ secrets.ANSOEGER_OM_OS }}
+          ANSOEGER_NAVN: ${{ secrets.ANSOEGER_NAVN }}
+          KEREBY_AUTOBOOK: ${{ secrets.KEREBY_AUTOBOOK }}
 
       - name: Gem hvilke boliger der er set
         run: |
           git config user.name "boligbot"
           git config user.email "boligbot@users.noreply.github.com"
-          git add state.json
-          git diff --staged --quiet || (git commit -m "opdater sete boliger" && git pull --rebase && git push)
+          cp state.json /tmp/ny.json
+          for forsoeg in 1 2 3 4 5; do
+            git fetch -q origin main
+            git reset -q --mixed origin/main
+            git show origin/main:state.json > /tmp/gammel.json 2>/dev/null || echo '{"set":{},"fejl":{}}' > /tmp/gammel.json
+            # Slå de to lister sammen, så ingen sete boliger går tabt
+            python - <<'PY'
+          import json
+          ny = json.load(open("/tmp/ny.json")); gammel = json.load(open("/tmp/gammel.json"))
+          gammel.get("set", {}).update(ny.get("set", {}))
+          ny["set"] = gammel.get("set", {})
+          json.dump(ny, open("state.json", "w"), ensure_ascii=False, indent=1, sort_keys=True)
+          PY
+            git add state.json
+            git diff --staged --quiet && exit 0
+            git commit -q -m "opdater sete boliger"
+            git push -q origin HEAD:main && exit 0
+            sleep $((RANDOM % 5 + 2))
+          done
+          echo "Kunne ikke gemme efter 5 forsøg (prøver igen næste kørsel)"
