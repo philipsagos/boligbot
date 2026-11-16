@@ -825,8 +825,18 @@ def gem_state(state):
     STATE_FIL.write_text(json.dumps(state, ensure_ascii=False, indent=1, sort_keys=True), encoding="utf-8")
 
 
+# Boliger der skal vurderes én gang til (fx efter en rettelse af reglerne).
+# Skift GENVURDER_VERSION når listen ændres.
+GENVURDER = ["https://cityapartment.dk/cityapartments/bohmensgade-14-3-tv/"]
+GENVURDER_VERSION = "2026-11-16"
+
+
 def koer(test=False):
     state = indlaes_state()
+    if not test and state.get("genvurder_version") != GENVURDER_VERSION:
+        for url in GENVURDER:
+            state["set"].pop(url, None)
+        state["genvurder_version"] = GENVURDER_VERSION
     SETTE_URLS.clear()
     SETTE_URLS.update(state["set"].keys())
     foerste_gang = not state["set"]
