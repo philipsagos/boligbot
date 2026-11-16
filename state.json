@@ -6,10 +6,11 @@
   "CEJ": 4,
   "City Apartment": 0,
   "EDC": 0,
-  "Heimstaden": 1,
+  "Heimstaden": 0,
   "Kereby": 0
  },
  "set": {
+  "https://cityapartment.dk/cityapartments/bohmensgade-14-3-tv/": "2026-11-16 14:23",
   "https://cityapartment.dk/cityapartments/bronzebakken-82/": "2026-10-21 10:56",
   "https://cityapartment.dk/cityapartments/bronzehojen-30/": "2026-11-11 16:58",
   "https://cityapartment.dk/cityapartments/falkonervaenget-21-st-tv/": "2026-10-19 13:35",
