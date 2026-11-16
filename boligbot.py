@@ -591,199 +591,196 @@ AUTOBOOK = os.getenv("KEREBY_AUTOBOOK", "").strip().lower()
 NAVN = os.getenv("ANSOEGER_NAVN", "Philip og Katrine")
 MAKS_BOOKINGER_PR_DOEGN = 3
 
-FYLD_FORMULAR_JS = r"""(data) => {
-  const synlig = e => { const r = e.getBoundingClientRect(); const st = getComputedStyle(e);
-      return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
-  const etiket = e => {
-      let t = (e.name || '') + ' ' + (e.id || '') + ' ' + (e.placeholder || '') + ' ' + (e.getAttribute('aria-label') || '');
-      if (e.id) { const l = document.querySelector(`label[for="${e.id}"]`); if (l) t += ' ' + l.textContent; }
-      const l2 = e.closest('label'); if (l2) t += ' ' + l2.textContent;
-      const p = e.parentElement;   // brug kun forælderens tekst hvis den er kort (ellers er det hele formularen)
-      if (t.trim().length < 3 && p && p.textContent.length < 120) t += ' ' + p.textContent;
-      return t.toLowerCase(); };
-  const saet = (e, v) => { const proto = e.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      Object.getOwnPropertyDescriptor(proto, 'value').set.call(e, v);
-      e.dispatchEvent(new Event('input', {bubbles: true})); e.dispatchEvent(new Event('change', {bubbles: true})); };
-  const rapport = [];
-  for (const e of document.querySelectorAll('input, textarea, select')) {
-      if (!synlig(e)) continue;
-      const t = etiket(e), type = (e.type || '').toLowerCase();
-      const r = e.getBoundingClientRect();
-      if (r.right < 0 || r.bottom < 0) continue;   // gemt uden for skærmen = fælde
-      if (/udfyld ikke|honeypot|leave.*empty/.test(t) || type === 'hidden' || type === 'submit' || type === 'search') continue;
-      let v = null;
-      if (type === 'checkbox') {
-          if (/accept|privat|samtyk|vilkår|betingelse|gdpr|persondata/.test(t)) { if (!e.checked) e.click(); rapport.push('☑ ' + t.slice(0, 60)); }
-          else rapport.push('☐ (rørt ikke) ' + t.slice(0, 60));
-          continue;
-      }
-      if (type === 'email' || /mail/.test(t)) v = data.email;
-      else if (type === 'tel' || /telefon|phone|mobil|tlf/.test(t)) v = data.telefon;
-      else if (e.tagName === 'TEXTAREA' || /besked|message|kommentar/.test(t)) v = data.besked;
-      else if (/efternavn|last.?name/.test(t)) v = data.efternavn;
-      else if (/fornavn|first.?name/.test(t)) v = data.fornavn;
-      else if (/navn|name/.test(t)) v = data.navn;
-      if (v !== null) { saet(e, v); rapport.push('✎ ' + t.slice(0, 50).replace(/\s+/g, ' ') + ' = ' + v.slice(0, 30)); }
-      else rapport.push('? ukendt felt: ' + type + ' ' + t.slice(0, 60).replace(/\s+/g, ' '));
+# Kereby's booking (set nov. 2026): "Book fremvisning" -> vindue "Fremvisning" med kalender
+# (grå dage = lukket) og tider 10:00-17:00 -> "Næste" -> Navn, Email, Telefonnummer,
+# "Evt. kommentar", flueben "Jeg accepterer ..." -> "Bestil fremvisning".
+
+LEDIG_JS = r"""(e) => {
+  // Er et kalender-/tidselement synligt og muligt at vælge?
+  const r = e.getBoundingClientRect();
+  if (r.width === 0 || r.height === 0) return false;
+  const st = getComputedStyle(e);
+  if (st.visibility === 'hidden' || st.display === 'none' || st.pointerEvents === 'none' || st.cursor === 'not-allowed') return false;
+  if (parseFloat(st.opacity) < 0.6) return false;
+  if (e.disabled || e.getAttribute('aria-disabled') === 'true' || e.closest('[aria-disabled="true"], [disabled]')) return false;
+  const kl = (e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className) + ' ' + ((e.parentElement && e.parentElement.className) || '');
+  if (/disabled|unavailable|inactive|past|outside|other-month|prev-month|next-month|blocked|not-allowed|greyed|grayed/i.test(kl)) return false;
+  // grå tekst = lukket dag (lysstyrke af tekstfarven)
+  const m = st.color.match(/\d+(\.\d+)?/g);
+  if (m) { const [rr, gg, bb] = m.map(Number); if ((0.299*rr + 0.587*gg + 0.114*bb) / 255 > 0.55) return false; }
+  return true;
+}"""
+
+VAELG_FOERSTE_JS = r"""(root, moenster) => {
+  // Klik på det første ledige element i 'root' hvis tekst matcher mønstret (dato eller tid)
+  const ledig = __LEDIG__;
+  const re = new RegExp(moenster);
+  const alle = [...root.querySelectorAll('*')].filter(e => re.test((e.textContent || '').trim()));
+  const blade = alle.filter(e => !alle.some(k => k !== e && e.contains(k)));   // inderste element
+  for (const e of blade) {
+      const mål = e.closest('button, a, td, li, [role=button], [role=gridcell], [role=option]') || e;
+      if (!root.contains(mål)) continue;
+      if (ledig(e) && ledig(mål)) { mål.scrollIntoView({block: 'center'}); mål.click(); return e.textContent.trim(); }
   }
-  return rapport;
-}"""
+  return null;
+}""".replace("__LEDIG__", LEDIG_JS)
 
-KLIK_TEKST_JS = r"""(regex) => {
-  const re = new RegExp(regex, 'i');
-  const synlig = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== 'hidden'; };
-  const kandidater = [...document.querySelectorAll('a, button, input[type=submit], [role=button]')]
-      .filter(e => re.test((e.textContent || e.value || '').trim()) && synlig(e));
-  if (!kandidater.length) return null;
-  const e = kandidater[kandidater.length - 1];
-  e.scrollIntoView({block: 'center'}); e.click();
-  return (e.textContent || e.value || '').trim().slice(0, 40);
-}"""
-
-VAELG_TID_JS = r"""(vaelg) => {
-  // Finder synlige, klikbare tidspunkter (fx "16:30", "kl. 17.00") og vælger det første ledige
-  const synlig = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== 'hidden'; };
-  const tid = /\b([01]?\d|2[0-3])[:.][0-5]\d\b/;
-  const kandidater = [...document.querySelectorAll('button, a, [role=button], [role=option], label, li, td, div')]
-      .filter(e => synlig(e) && e.children.length <= 3 && tid.test(e.textContent || '') && (e.textContent || '').trim().length < 60)
-      .filter(e => !e.disabled && e.getAttribute('aria-disabled') !== 'true' && !/disabled|optaget|booked|full|udsolgt/i.test(e.className + ' ' + e.textContent));
-  // fjern forældre der blot indeholder et andet tidspunkt
-  const blade = kandidater.filter(e => !kandidater.some(k => k !== e && e.contains(k)));
-  const tekster = blade.map(e => e.textContent.trim().replace(/\s+/g, ' ')).slice(0, 10);
-  if (vaelg && blade.length) {
-      const e = blade[0]; e.scrollIntoView({block: 'center'});
-      (e.closest('button, a, [role=button], [role=option], label') || e).click();
-      const radio = e.querySelector('input[type=radio]') || (e.closest('label') && e.closest('label').querySelector('input[type=radio]'));
-      if (radio && !radio.checked) radio.click();
-      return {valgt: tekster[0], alle: tekster};
+FLUEBEN_JS = r"""(root) => {
+  // Sæt flueben i "Jeg accepterer ..." (også når selve boksen er skjult bag et pænt design)
+  for (const cb of root.querySelectorAll('input[type=checkbox]')) {
+      const ramme = cb.closest('label') || cb.parentElement;
+      const tekst = ((ramme && ramme.textContent) || '') + ' ' + ((cb.id && (document.querySelector(`label[for="${cb.id}"]`) || {}).textContent) || '');
+      if (!/accepter|privatpolitik|personoplys/i.test(tekst)) continue;
+      if (!cb.checked) cb.click();
+      if (!cb.checked) { const l = cb.id && document.querySelector(`label[for="${cb.id}"]`); if (l) l.click(); }
+      return cb.checked ? 'ok' : 'kunne ikke sætte flueben';
   }
-  return {valgt: null, alle: tekster};
+  // Ingen rigtig checkbox: klik på den tegnede boks ved teksten
+  const t = [...root.querySelectorAll('*')].find(e => /jeg accepterer/i.test(e.textContent || '') && e.children.length <= 3);
+  if (!t) return 'fandt ikke accept-feltet';
+  const boks = t.previousElementSibling || t.parentElement.querySelector('span, div, i');
+  (boks || t).click();
+  return 'klikket (custom boks)';
 }"""
-
-
-HAR_EMAIL_JS = r"""() => [...document.querySelectorAll('input')].some(e => {
-    const r = e.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && (e.type === 'email' || /mail/i.test((e.name||'') + (e.id||'') + (e.placeholder||'')));
-})"""
-HAR_TIDER_JS = r"""() => /\b([01]?\d|2[0-3])[:.][0-5]\d\b/.test(document.body ? document.body.innerText : '')"""
-
-
-def _find_formular_ramme(side, sekunder=10):
-    """Leder i siden og alle indlejrede rammer (iframes) efter formularen/kalenderen."""
-    for _ in range(sekunder * 2):
-        for ramme in side.frames:
-            try:
-                if ramme.evaluate(HAR_EMAIL_JS):
-                    return ramme
-            except Exception:  # noqa: BLE001
-                pass
-        side.wait_for_timeout(500)
-    # ingen e-mail-felt: tag en ramme med tidspunkter (kalender), ellers hovedsiden
-    for ramme in side.frames:
-        try:
-            if ramme != side.main_frame and ramme.evaluate(HAR_TIDER_JS):
-                return ramme
-        except Exception:  # noqa: BLE001
-            pass
-    return side.main_frame
-
-
-def _beskriv(side):
-    """Kort beskrivelse af hvad der er på skærmen — til fejlfinding."""
-    dele = []
-    try:
-        rammer = [f.url[:80] for f in side.frames if f != side.main_frame and f.url not in ("about:blank", "")]
-        if rammer:
-            dele.append(f"rammer: {rammer[:4]}")
-        knapper = side.evaluate(r"""() => [...document.querySelectorAll('a, button, [role=button]')]
-            .filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.top < innerHeight && r.bottom > 0; })
-            .map(e => (e.textContent||'').trim().replace(/\s+/g,' ')).filter(t => t && t.length < 40).slice(0, 15)""")
-        dele.append(f"synlige knapper: {knapper}")
-        dele.append(f"adresse nu: {side.url[:100]}")
-    except Exception as ex:  # noqa: BLE001
-        dele.append(f"(kunne ikke beskrive siden: {ex})")
-    return " | ".join(dele)
 
 
 def kereby_book(b, send=False):
-    """Åbner boligen, trykker 'Book fremvisning', vælger evt. tidspunkt og udfylder formularen.
-    Returnerer (lykkedes: bool, forklaring: str)."""
+    """Booker fremvisning på Kereby: første ledige dato og tid.
+    send=False: udfylder alt men trykker IKKE 'Bestil fremvisning'.
+    Returnerer (lykkedes, forklaring)."""
     from playwright.sync_api import sync_playwright
-    fornavn, _, efternavn = NAVN.partition(" ")
-    data = {"navn": NAVN, "fornavn": fornavn, "efternavn": efternavn or fornavn,
-            "email": EMAIL, "telefon": TELEFON, "besked": ansoegningstekst(b)}
+    trin = []
+
+    def log(tekst):
+        trin.append(tekst)
+        print(f"  [booking] {tekst}")
+
+    def fejl(tekst):
+        log(f"❌ {tekst}")
+        return False, " → ".join(trin)
+
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        kontekst = browser.new_context(user_agent=HEADERS["User-Agent"], locale="da-DK",
-                                       viewport={"width": 1366, "height": 900})
-        side = kontekst.new_page()
+        side = browser.new_context(user_agent=HEADERS["User-Agent"], locale="da-DK",
+                                   viewport={"width": 1366, "height": 900}).new_page()
         try:
-            side.goto(b["url"], wait_until="networkidle", timeout=45000)
-            side.evaluate(KLIK_TEKST_JS, r"^(accepter|tillad|godkend|ok)( alle)?")   # cookie-banner
-            side.wait_for_timeout(800)
-            if re.search(r"\b(Reserveret|Udlejet)\b", side.inner_text("body")[:3000]):
-                return False, "boligen er allerede reserveret"
-            antal_sider = len(kontekst.pages)
-            if not side.evaluate(KLIK_TEKST_JS, r"book fremvisning"):
-                return False, "fandt ingen 'Book fremvisning'-knap. " + _beskriv(side)
-            side.wait_for_timeout(2500)
-            if len(kontekst.pages) > antal_sider:       # åbnede i nyt vindue/fane
-                side = kontekst.pages[-1]
-                side.wait_for_load_state("networkidle", timeout=30000)
-                print(f"  [booking] åbnede nyt vindue: {side.url}")
+            side.goto(b["url"], wait_until="domcontentloaded", timeout=45000)
             try:
-                side.wait_for_load_state("networkidle", timeout=10000)
+                side.wait_for_load_state("networkidle", timeout=15000)
             except Exception:  # noqa: BLE001
                 pass
+            for navn in ("Tillad alle", "Accepter alle", "Accepter", "Godkend alle", "OK"):   # cookie-banner
+                k = side.get_by_role("button", name=re.compile(rf"^\s*{navn}", re.I))
+                if k.count() and k.first.is_visible():
+                    k.first.click()
+                    side.wait_for_timeout(500)
+                    break
+            if re.search(r"\b(Reserveret|Udlejet)\b", side.inner_text("body")[:3000]):
+                return fejl("boligen er allerede reserveret")
 
-            ramme = _find_formular_ramme(side)
-            # Ingen formular/kalender endnu? Tryk "Book fremvisning" igen inde i den nye ramme/det nye vindue
-            if not ramme.evaluate(HAR_EMAIL_JS) and not ramme.evaluate(HAR_TIDER_JS):
-                for f in [f for f in side.frames if f != side.main_frame] + [side.main_frame]:
+            # 1) Åbn bookingvinduet
+            knapper = side.get_by_text(re.compile(r"^\s*Book fremvisning\s*$", re.I))
+            synlig = next((knapper.nth(i) for i in range(knapper.count()) if knapper.nth(i).is_visible()), None)
+            if synlig is None:
+                return fejl("fandt ingen synlig 'Book fremvisning'-knap")
+            synlig.click()
+            try:
+                side.get_by_text(re.compile(r"Ønsket fremvisningsdato", re.I)).first.wait_for(state="visible", timeout=10000)
+            except Exception:  # noqa: BLE001
+                return fejl("bookingvinduet med kalender kom ikke frem")
+            vindue = side.locator("div").filter(has_text=re.compile(r"Ønsket fremvisningsdato", re.I)) \
+                         .filter(has_text=re.compile(r"Næste", re.I)).last
+            log("1 åbnede bookingvinduet")
+
+            # 2) Første ledige dato (bladrer evt. til næste måned)
+            dato = None
+            for _ in range(3):
+                dato = vindue.evaluate(VAELG_FOERSTE_JS, r"^\d{1,2}$")
+                if dato:
+                    break
+                pil = vindue.locator("[class*=next], [aria-label*=næste i], [aria-label*=next i]").first
+                if not pil.count():
+                    break
+                pil.click()
+                side.wait_for_timeout(800)
+            if not dato:
+                return fejl("ingen ledig dato i kalenderen")
+            side.wait_for_timeout(1200)
+            log(f"2 valgte dato {dato}.")
+
+            # 3) Første ledige tidspunkt
+            tid = vindue.evaluate(VAELG_FOERSTE_JS, r"^([01]?\d|2[0-3])[:.][0-5]\d$")
+            if not tid:
+                return fejl("ingen ledige tidspunkter på den dato")
+            side.wait_for_timeout(600)
+            log(f"3 valgte kl. {tid}")
+
+            # 4) Næste
+            naeste = vindue.get_by_text(re.compile(r"^\s*Næste", re.I)).last
+            naeste.click()
+            try:
+                side.get_by_text(re.compile(r"Kontaktinformation", re.I)).first.wait_for(state="visible", timeout=10000)
+            except Exception:  # noqa: BLE001
+                return fejl("kom ikke videre efter 'Næste' (kontaktformularen kom ikke frem)")
+            vindue = side.locator("div").filter(has_text=re.compile(r"Kontaktinformation", re.I)) \
+                         .filter(has_text=re.compile(r"Bestil fremvisning", re.I)).last
+            log("4 trykkede Næste")
+
+            # 5) Udfyld kontaktoplysninger
+            def felt(*muligheder):
+                for loc in muligheder:
                     try:
-                        if f.evaluate(KLIK_TEKST_JS, r"book fremvisning|book en tid|vælg tid|se ledige tider"):
-                            print(f"  [booking] trykkede igen i {f.url[:80]}")
-                            side.wait_for_timeout(2500)
-                            break
+                        if loc.count() and loc.first.is_visible():
+                            return loc.first
                     except Exception:  # noqa: BLE001
                         pass
-                ramme = _find_formular_ramme(side, sekunder=6)
-            if ramme != side.main_frame:
-                print(f"  [booking] formularen ligger i en indlejret ramme: {ramme.url[:100]}")
+                return None
 
-            # Kalender? Vælg første ledige tidspunkt (at vælge en tid sender intet — det gør kun "bekræft")
-            tider = ramme.evaluate(VAELG_TID_JS, True)
-            valgt_tid = tider.get("valgt")
-            if tider.get("alle"):
-                print(f"  [booking] tidspunkter set: {tider['alle']}" + (f" -> valgte {valgt_tid}" if valgt_tid else ""))
-                if valgt_tid:
-                    side.wait_for_timeout(1500)
-                    ramme.evaluate(KLIK_TEKST_JS, r"^(næste|videre|fortsæt|vælg|continue|next)$")
-                    side.wait_for_timeout(1500)
-                    ramme = _find_formular_ramme(side, sekunder=6)
+            navn_f = felt(vindue.get_by_label(re.compile(r"^\s*Navn", re.I)), vindue.get_by_placeholder(re.compile(r"Navn", re.I)),
+                          vindue.locator("input[name*=name i]:not([type=email])"))
+            mail_f = felt(vindue.locator("input[type=email]"), vindue.get_by_label(re.compile(r"e-?mail", re.I)),
+                          vindue.get_by_placeholder(re.compile(r"e-?mail", re.I)), vindue.locator("input[name*=mail i]"))
+            tlf_f = felt(vindue.locator("input[type=tel]"), vindue.get_by_label(re.compile(r"Telefon", re.I)),
+                         vindue.get_by_placeholder(re.compile(r"Telefon", re.I)), vindue.locator("input[name*=phone i]"))
+            kom_f = felt(vindue.locator("textarea"))
+            mangler = [n for n, f in (("Navn", navn_f), ("Email", mail_f), ("Telefonnummer", tlf_f)) if f is None]
+            if mangler:
+                return fejl(f"fandt ikke feltet/felterne: {', '.join(mangler)}")
+            navn_f.fill(NAVN)
+            mail_f.fill(EMAIL)
+            tlf_f.fill(re.sub(r"^\+?45", "", TELEFON.replace(" ", "")))
+            if kom_f is not None:
+                kom_f.fill(ansoegningstekst(b))
+            flueben = vindue.evaluate(FLUEBEN_JS)
+            log(f"5 udfyldte navn, email, telefon{', kommentar' if kom_f else ''} · flueben: {flueben}")
 
-            rapport = ramme.evaluate(FYLD_FORMULAR_JS, data)
-            print("  [booking] felter:\n    " + "\n    ".join(rapport or ["(ingen synlige felter)"]))
-            if not any(r.startswith("✎") and "@" in r for r in rapport):
-                beskrivelse = _beskriv(side)
-                print(f"  [booking] skærmen efter klik: {side.inner_text('body')[:1000]!r}")
-                return False, "fandt ikke formularen (intet e-mail-felt). " + beskrivelse
+            bestil = vindue.get_by_role("button", name=re.compile(r"Bestil fremvisning", re.I))
+            if not bestil.count():
+                bestil = vindue.get_by_text(re.compile(r"^\s*Bestil fremvisning\s*$", re.I))
+            if not bestil.count():
+                return fejl("fandt ikke knappen 'Bestil fremvisning'")
+            klar = bestil.first.is_enabled()
             if not send:
-                knap = ramme.evaluate(r"""() => [...document.querySelectorAll('button, input[type=submit]')]
-                    .filter(e => e.getBoundingClientRect().width > 0).map(e => (e.textContent||e.value).trim()).filter(Boolean).slice(-6)""")
-                tidstekst = f" Ledige tidspunkter: {tider['alle'][:5]}." if tider.get("alle") else " Ingen kalender fundet."
-                return True, f"TEST: formularen er udfyldt men IKKE sendt.{tidstekst} Synlige knapper: {knap}"
-            klikket = ramme.evaluate(KLIK_TEKST_JS, r"^(send|book|bekræft|anmod|indsend|tilmeld)")
-            if not klikket:
-                ramme.evaluate("() => { const f = [...document.querySelectorAll('form')].find(f => f.querySelector('input[type=email]')); if (f) f.requestSubmit(); }")
-                klikket = "(formularen sendt)"
+                log("6 TEST: stoppede før 'Bestil fremvisning' — intet er sendt"
+                    + ("" if klar else " (OBS: knappen ser stadig grå/låst ud)"))
+                return klar, f"dato {dato}. kl. {tid} — " + " → ".join(trin)
+            if not klar:
+                return fejl("'Bestil fremvisning' er stadig låst — et felt mangler måske")
+
+            # 6) Bestil
+            bestil.first.click()
             side.wait_for_timeout(4000)
-            tekst = " ".join(f.evaluate("() => document.body ? document.body.innerText : ''") for f in side.frames)
-            if re.search(r"tak for|modtaget|bekræft|booket|vi kontakter|vi vender tilbage|sendt", tekst, re.I):
-                return True, (f"tid: {valgt_tid}" if valgt_tid else f"forespørgsel sendt ('{klikket}')")
-            return False, f"trykkede '{klikket}', men så ingen bekræftelse — tjek selv"
+            tekst = side.inner_text("body")
+            endnu_der = bestil.first.is_visible() if bestil.count() else False
+            if re.search(r"\btak\b|modtaget|bekræftet|er booket|er bestilt|bestilling", tekst, re.I) and not endnu_der:
+                log("6 bestilt ✅")
+                return True, f"{dato}. kl. {tid}"
+            if not endnu_der:
+                log("6 trykkede 'Bestil fremvisning' — vinduet lukkede, men ingen tydelig bekræftelse")
+                return True, f"{dato}. kl. {tid} (tjek din mail for bekræftelse)"
+            return fejl("trykkede 'Bestil fremvisning', men vinduet står der stadig — tjek selv")
         except Exception as ex:  # noqa: BLE001
-            return False, f"fejl: {str(ex)[:150]}"
+            return fejl(f"uventet fejl: {str(ex)[:150]}")
         finally:
             browser.close()
 
