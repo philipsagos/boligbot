@@ -620,7 +620,11 @@ VAELG_FOERSTE_JS = r"""(root, moenster) => {
   for (const e of blade) {
       const mål = e.closest('button, a, td, li, [role=button], [role=gridcell], [role=option]') || e;
       if (!root.contains(mål)) continue;
-      if (ledig(e) && ledig(mål)) { mål.scrollIntoView({block: 'center'}); mål.click(); return e.textContent.trim(); }
+      if (ledig(e) && ledig(mål)) {
+          document.querySelectorAll('[data-boligbot]').forEach(x => x.removeAttribute('data-boligbot'));
+          mål.setAttribute('data-boligbot', 'valg');   // Python klikker med en rigtig mus
+          return e.textContent.trim();
+      }
   }
   return null;
 }""".replace("__LEDIG__", LEDIG_JS)
@@ -705,23 +709,57 @@ def kereby_book(b, send=False):
                 side.wait_for_timeout(800)
             if not dato:
                 return fejl("ingen ledig dato i kalenderen")
-            side.wait_for_timeout(1200)
+            side.locator("[data-boligbot=valg]").first.click()
+            side.wait_for_timeout(1500)
             log(f"2 valgte dato {dato}.")
 
             # 3) Første ledige tidspunkt
             tid = vindue.evaluate(VAELG_FOERSTE_JS, r"^([01]?\d|2[0-3])[:.][0-5]\d$")
             if not tid:
                 return fejl("ingen ledige tidspunkter på den dato")
-            side.wait_for_timeout(600)
+            side.locator("[data-boligbot=valg]").first.click()
+            side.wait_for_timeout(800)
             log(f"3 valgte kl. {tid}")
 
             # 4) Næste
-            naeste = vindue.get_by_text(re.compile(r"^\s*Næste", re.I)).last
-            naeste.click()
-            try:
-                side.get_by_text(re.compile(r"Kontaktinformation", re.I)).first.wait_for(state="visible", timeout=10000)
-            except Exception:  # noqa: BLE001
-                return fejl("kom ikke videre efter 'Næste' (kontaktformularen kom ikke frem)")
+            naeste = vindue.get_by_role("button", name=re.compile(r"Næste", re.I))
+            if not naeste.count():
+                naeste = vindue.get_by_text(re.compile(r"^\s*Næste", re.I))
+            naeste = naeste.last
+            kontakt = side.get_by_text(re.compile(r"Kontaktinformation", re.I)).first
+            for forsoeg in range(2):
+                try:
+                    naeste.click(timeout=5000)
+                except Exception:  # noqa: BLE001
+                    naeste.click(force=True)
+                try:
+                    kontakt.wait_for(state="visible", timeout=8000)
+                    break
+                except Exception:  # noqa: BLE001
+                    if forsoeg == 0:   # prøv at vælge dato og tid igen og tryk Næste en gang til
+                        if vindue.evaluate(VAELG_FOERSTE_JS, r"^\d{1,2}$"):
+                            side.locator("[data-boligbot=valg]").first.click()
+                            side.wait_for_timeout(1500)
+                        if vindue.evaluate(VAELG_FOERSTE_JS, r"^([01]?\d|2[0-3])[:.][0-5]\d$"):
+                            side.locator("[data-boligbot=valg]").first.click()
+                            side.wait_for_timeout(800)
+                        continue
+                    # Fejlfinding: hvad står der i vinduet?
+                    try:
+                        print("  [booking-debug] Næste-knap:", naeste.evaluate("e => e.outerHTML.slice(0, 300)"))
+                        print("  [booking-debug] valgte elementer:", vindue.evaluate(
+                            "r => [...r.querySelectorAll('[class*=select], [class*=active], [aria-selected=true], [aria-pressed=true], :checked')]"
+                            ".slice(0,8).map(e => e.outerHTML.slice(0,160))"))
+                        print("  [booking-debug] tidsknap:", vindue.evaluate(
+                            "r => { const e = [...r.querySelectorAll('*')].find(x => /^1[0-7]:00$/.test((x.textContent||'').trim()) && !x.children.length);"
+                            " return e ? (e.closest('button,label,li,div') || e).outerHTML.slice(0, 300) : null }"))
+                        print("  [booking-debug] datocelle:", vindue.evaluate(
+                            "r => { const e = [...r.querySelectorAll('*')].find(x => (x.textContent||'').trim() === '23' && !x.children.length);"
+                            " return e ? (e.closest('td,button,div') || e).outerHTML.slice(0, 300) : null }"))
+                        print("  [booking-debug] tekst:", vindue.inner_text()[:600].replace("\n", " | "))
+                    except Exception as ex:  # noqa: BLE001
+                        print("  [booking-debug] kunne ikke læse vinduet:", ex)
+                    return fejl("kom ikke videre efter 'Næste' (kontaktformularen kom ikke frem)")
             vindue = side.locator("div").filter(has_text=re.compile(r"Kontaktinformation", re.I)) \
                          .filter(has_text=re.compile(r"Bestil fremvisning", re.I)).last
             log("4 trykkede Næste")
@@ -873,10 +911,10 @@ def koer(test=False):
                 pass
             ok, forklaring = kereby_book(proeve, send=False)
             print(f"  [booking-test på {proeve['url']}] {forklaring}")
-            if not state.get("booking_test_sendt_v2"):
+            if not state.get("booking_test_sendt_v3"):
                 send_telegram(f"🧪 <b>Booking-test på Kereby</b> ({html.escape(proeve['url'])})\n"
                               f"{'✅' if ok else '❌'} {html.escape(forklaring)}\n\nIntet er sendt til Kereby.")
-                state["booking_test_sendt_v2"] = True
+                state["booking_test_sendt_v3"] = True
 
         for b in boliger:
             if b["url"] in state["set"] and not test:
