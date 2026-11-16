@@ -484,8 +484,8 @@ def total_leje(b):
 
 def hurtigt_fravalg(b):
     """Fravælger på listedata, så vi ikke henter detaljer unødigt."""
-    if b["vaer"] is not None and b["vaer"] < MIN_VAERELSER:
-        return True
+    if b["vaer"] is not None and b["vaer"] < MIN_VAERELSER and (b["m2"] is None or b["m2"] < MIN_M2):
+        return True   # få værelser OG lille -> fravælg (stor bolig med "1 værelse" får lov at gå videre)
     if b["m2"] is not None and b["m2"] < MIN_M2_GUL:
         return True
     if b["leje"] is not None and b["leje"] > MAX_LEJE_GUL:
@@ -517,7 +517,12 @@ def vurder(b):
         gul = True
         noter.append("antal værelser ukendt")
     elif b["vaer"] < MIN_VAERELSER:
-        return "nej", ["for få værelser"]
+        if b["m2"] is not None and b["m2"] >= MIN_M2:
+            # Nogle udlejere (fx City Apartment) tæller kun soveværelser
+            gul = True
+            noter.append(f"står som {b['vaer']} værelse, men er {b['m2']} m² — tjek antal værelser")
+        else:
+            return "nej", ["for få værelser"]
 
     if b["m2"] is None:
         gul = True
