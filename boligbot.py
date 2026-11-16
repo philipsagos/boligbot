@@ -692,40 +692,63 @@ def kereby_book(b, send=False):
                 side.get_by_text(re.compile(r"Ønsket fremvisningsdato", re.I)).first.wait_for(state="visible", timeout=10000)
             except Exception:  # noqa: BLE001
                 return fejl("bookingvinduet med kalender kom ikke frem")
+            # Bookingvinduet = inderste boks med både dato-kalender og tidspunkter
             vindue = side.locator("div").filter(has_text=re.compile(r"Ønsket fremvisningsdato", re.I)) \
-                         .filter(has_text=re.compile(r"Næste", re.I)).last
+                         .filter(has_text=re.compile(r"fremvisningstidspunkt", re.I)).last
             log("1 åbnede bookingvinduet")
 
-            # 2) Første ledige dato (bladrer evt. til næste måned)
+            # 2) Første ledige dato. Kereby bruger kalenderen "Pikaday":
+            #    td.is-disabled = lukket dag, knappen hedder button.pika-day, måned frem = button.pika-next
             dato = None
             for _ in range(3):
-                dato = vindue.evaluate(VAELG_FOERSTE_JS, r"^\d{1,2}$")
-                if dato:
+                dage = vindue.locator("td:not(.is-disabled):not(.is-empty) button.pika-day:not([disabled])")
+                if dage.count():
+                    d = dage.first
+                    dato = f"{d.get_attribute('data-pika-day')}/{int(d.get_attribute('data-pika-month') or 0) + 1}"
+                    d.click()
                     break
-                pil = vindue.locator("[class*=next], [aria-label*=næste i], [aria-label*=next i]").first
-                if not pil.count():
-                    break
-                pil.click()
-                side.wait_for_timeout(800)
+                if vindue.locator("button.pika-day").count():     # Pikaday, men ingen ledige dage: næste måned
+                    vindue.locator("button.pika-next").first.click()
+                    side.wait_for_timeout(800)
+                    continue
+                # reserve: anden kalender
+                tekst = vindue.evaluate(VAELG_FOERSTE_JS, r"^\d{1,2}$")
+                if tekst:
+                    side.locator("[data-boligbot=valg]").first.click()
+                    dato = tekst + "."
+                break
             if not dato:
                 return fejl("ingen ledig dato i kalenderen")
-            side.locator("[data-boligbot=valg]").first.click()
             side.wait_for_timeout(1500)
-            log(f"2 valgte dato {dato}.")
+            log(f"2 valgte dato {dato}")
 
-            # 3) Første ledige tidspunkt
-            tid = vindue.evaluate(VAELG_FOERSTE_JS, r"^([01]?\d|2[0-3])[:.][0-5]\d$")
+            # 3) Første ledige tidspunkt (Kereby: button.jorato-case-detail__booking-pill)
+            piller = vindue.locator("button[class*=booking-pill]:not([disabled]):not(.is-disabled)")
+            if piller.count():
+                tid = piller.first.inner_text().strip()
+                piller.first.click()
+            else:
+                tid = vindue.evaluate(VAELG_FOERSTE_JS, r"^([01]?\d|2[0-3])[:.][0-5]\d$")
+                if tid:
+                    side.locator("[data-boligbot=valg]").first.click()
             if not tid:
                 return fejl("ingen ledige tidspunkter på den dato")
-            side.locator("[data-boligbot=valg]").first.click()
             side.wait_for_timeout(800)
             log(f"3 valgte kl. {tid}")
 
             # 4) Næste
-            naeste = vindue.get_by_role("button", name=re.compile(r"Næste", re.I))
-            if not naeste.count():
-                naeste = vindue.get_by_text(re.compile(r"^\s*Næste", re.I))
-            naeste = naeste.last
+            # Knappen hedder præcis "Næste" (ikke "Næste måned") og kan ligge uden for kalender-boksen
+            naeste_re = re.compile(r"^\s*Næste\s*(→|->)?\s*$", re.I)
+            kandidater = [side.get_by_role("button", name=naeste_re), side.get_by_text(naeste_re)]
+            naeste = None
+            for k in kandidater:
+                for i in range(k.count()):
+                    if k.nth(i).is_visible():
+                        naeste = k.nth(i)
+                if naeste is not None:
+                    break
+            if naeste is None:
+                return fejl("fandt ikke 'Næste'-knappen")
             kontakt = side.get_by_text(re.compile(r"Kontaktinformation", re.I)).first
             for forsoeg in range(2):
                 try:
@@ -736,12 +759,9 @@ def kereby_book(b, send=False):
                     kontakt.wait_for(state="visible", timeout=8000)
                     break
                 except Exception:  # noqa: BLE001
-                    if forsoeg == 0:   # prøv at vælge dato og tid igen og tryk Næste en gang til
-                        if vindue.evaluate(VAELG_FOERSTE_JS, r"^\d{1,2}$"):
-                            side.locator("[data-boligbot=valg]").first.click()
-                            side.wait_for_timeout(1500)
-                        if vindue.evaluate(VAELG_FOERSTE_JS, r"^([01]?\d|2[0-3])[:.][0-5]\d$"):
-                            side.locator("[data-boligbot=valg]").first.click()
+                    if forsoeg == 0:   # vælg tiden igen og tryk Næste en gang til
+                        if piller.count():
+                            piller.first.click()
                             side.wait_for_timeout(800)
                         continue
                     # Fejlfinding: hvad står der i vinduet?
@@ -801,7 +821,7 @@ def kereby_book(b, send=False):
             if not send:
                 log("6 TEST: stoppede før 'Bestil fremvisning' — intet er sendt"
                     + ("" if klar else " (OBS: knappen ser stadig grå/låst ud)"))
-                return klar, f"dato {dato}. kl. {tid} — " + " → ".join(trin)
+                return klar, f"dato {dato} kl. {tid} — " + " → ".join(trin)
             if not klar:
                 return fejl("'Bestil fremvisning' er stadig låst — et felt mangler måske")
 
@@ -812,10 +832,10 @@ def kereby_book(b, send=False):
             endnu_der = bestil.first.is_visible() if bestil.count() else False
             if re.search(r"\btak\b|modtaget|bekræftet|er booket|er bestilt|bestilling", tekst, re.I) and not endnu_der:
                 log("6 bestilt ✅")
-                return True, f"{dato}. kl. {tid}"
+                return True, f"{dato} kl. {tid}"
             if not endnu_der:
                 log("6 trykkede 'Bestil fremvisning' — vinduet lukkede, men ingen tydelig bekræftelse")
-                return True, f"{dato}. kl. {tid} (tjek din mail for bekræftelse)"
+                return True, f"{dato} kl. {tid} (tjek din mail for bekræftelse)"
             return fejl("trykkede 'Bestil fremvisning', men vinduet står der stadig — tjek selv")
         except Exception as ex:  # noqa: BLE001
             return fejl(f"uventet fejl: {str(ex)[:150]}")
@@ -911,10 +931,10 @@ def koer(test=False):
                 pass
             ok, forklaring = kereby_book(proeve, send=False)
             print(f"  [booking-test på {proeve['url']}] {forklaring}")
-            if not state.get("booking_test_sendt_v3"):
+            if not state.get("booking_test_sendt_v4"):
                 send_telegram(f"🧪 <b>Booking-test på Kereby</b> ({html.escape(proeve['url'])})\n"
                               f"{'✅' if ok else '❌'} {html.escape(forklaring)}\n\nIntet er sendt til Kereby.")
-                state["booking_test_sendt_v3"] = True
+                state["booking_test_sendt_v4"] = True
 
         for b in boliger:
             if b["url"] in state["set"] and not test:
