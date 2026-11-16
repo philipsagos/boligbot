@@ -828,7 +828,7 @@ def gem_state(state):
 # Boliger der skal vurderes én gang til (fx efter en rettelse af reglerne).
 # Skift GENVURDER_VERSION når listen ændres.
 GENVURDER = ["https://cityapartment.dk/cityapartments/bohmensgade-14-3-tv/"]
-GENVURDER_VERSION = "2026-11-16"
+GENVURDER_VERSION = "2026-11-16b"
 
 
 def koer(test=False):
