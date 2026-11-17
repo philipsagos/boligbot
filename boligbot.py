@@ -844,7 +844,15 @@ def kereby_book(b, send=False, foto=None):
                 bestil = vindue.get_by_text(re.compile(r"^\s*Bestil fremvisning\s*$", re.I))
             if not bestil.count():
                 return fejl("fandt ikke knappen 'Bestil fremvisning'")
-            knap = bestil.first
+            # Find knappen direkte på siden via Kereby's faste kendetegn (ikke via bookingvinduet,
+            # som kan "miste grebet" når siden opdaterer sig), og hold fast i præcis det element.
+            fast = side.locator("button[data-track='showcasing-step-2-book'], button[class*=booking-btn--primary]") \
+                       .filter(has_text=re.compile(r"Bestil fremvisning", re.I))
+            synlige = [fast.nth(i) for i in range(fast.count()) if fast.nth(i).is_visible()]
+            if not synlige:
+                alle = side.get_by_role("button", name=re.compile(r"^\s*Bestil fremvisning\s*$", re.I))
+                synlige = [alle.nth(i) for i in range(alle.count()) if alle.nth(i).is_visible()] or [bestil.first]
+            knap = synlige[0].element_handle()
             try:
                 knap.scroll_into_view_if_needed(timeout=5000)
             except Exception:  # noqa: BLE001
@@ -864,7 +872,7 @@ def kereby_book(b, send=False, foto=None):
             print(f"  [booking-diag] knap: {diag}")
             if foto:
                 side.screenshot(path=foto)
-            klar = not diag["laast"] and knap.is_enabled()
+            klar = not diag["laast"] and knap.is_enabled() and knap.is_visible()
             if not send:
                 log("6 TEST: stoppede før 'Bestil fremvisning' — intet er sendt"
                     + ("" if klar else " (OBS: knappen er låst)")
@@ -942,7 +950,7 @@ def gem_state(state):
 # Boliger der skal vurderes én gang til (fx efter en rettelse af reglerne).
 # Skift GENVURDER_VERSION når listen ændres.
 GENVURDER = ["https://cityapartment.dk/cityapartments/bohmensgade-14-3-tv/"]
-DIAGNOSE_V = "2026-11-17"   # skift for at køre en ny kontrol af Kereby-bookingen
+DIAGNOSE_V = "2026-11-17b"   # skift for at køre en ny kontrol af Kereby-bookingen
 GENVURDER_VERSION = "2026-11-16c"
 
 
