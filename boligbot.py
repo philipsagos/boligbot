@@ -70,6 +70,21 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (privat boligsøgning; kontakt via egen ma
 TIMEOUT = 25
 
 
+def start_browser(p):
+    """Bruger den Google Chrome, der allerede er installeret (hurtigst). Ellers Playwrights egen Chromium."""
+    try:
+        return p.chromium.launch(channel="chrome")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return p.chromium.launch()
+    except Exception:  # noqa: BLE001
+        import subprocess
+        print("  installerer browser (kun første gang)...")
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=False)
+        return p.chromium.launch()
+
+
 def hent(url):
     r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
     r.raise_for_status()
@@ -245,7 +260,7 @@ def render_sider(urls):
     from playwright.sync_api import sync_playwright
     resultat = {}
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = start_browser(p)
         side = browser.new_page(user_agent=HEADERS["User-Agent"], locale="da-DK")
         for url in urls:
             try:
@@ -346,7 +361,7 @@ def cej_liste():
 
     boliger = {}
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = start_browser(p)
         side = browser.new_page(user_agent=HEADERS["User-Agent"], locale="da-DK")
         for url in ejendomme[:25]:
             try:
@@ -679,7 +694,7 @@ def kereby_book(b, send=False, foto=None):
         return False, " → ".join(trin)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = start_browser(p)
         side = browser.new_context(user_agent=HEADERS["User-Agent"], locale="da-DK",
                                    viewport={"width": 1366, "height": 900}).new_page()
         svar = []   # serverens svar på indsendelser (POST/PUT) — bevis for at bestillingen kom frem
@@ -967,7 +982,11 @@ def koer(test=False):
     nu = time.strftime("%Y-%m-%d %H:%M")
     fundet_noget = 0
 
+    kun = sys.argv[sys.argv.index("--kun") + 1].split(",") if "--kun" in sys.argv else None
+    uden = sys.argv[sys.argv.index("--uden") + 1].split(",") if "--uden" in sys.argv else []
     for navn, liste_fn, detalje_fn in KILDER:
+        if (kun and navn not in kun) or navn in uden:
+            continue
         try:
             boliger = liste_fn()
         except Exception as ex:  # noqa: BLE001
@@ -1036,14 +1055,14 @@ def koer(test=False):
                 booking_linje = ""
                 if b["kilde"] == "Kereby" and status == "groen" and AUTOBOOK in ("til", "test") and not test:
                     idag = time.strftime("%Y-%m-%d")
-                    bookinger = state.setdefault("bookinger", {})
-                    if AUTOBOOK == "til" and bookinger.get(idag, 0) >= MAKS_BOOKINGER_PR_DOEGN:
+                    antal_idag = sum(1 for k in state["set"] if k.startswith(f"__booket_{idag}_"))
+                    if AUTOBOOK == "til" and antal_idag >= MAKS_BOOKINGER_PR_DOEGN:
                         booking_linje = "⏸ Automatisk booking sprunget over (maks. pr. døgn nået) — book selv!"
                     else:
                         ok, forklaring = kereby_book(b, send=(AUTOBOOK == "til"), foto="booking.png")
                         print(f"  [booking] {forklaring}")
                         if AUTOBOOK == "til" and ok:
-                            bookinger[idag] = bookinger.get(idag, 0) + 1
+                            state["set"][f"__booket_{idag}_{b['url']}"] = nu
                             booking_linje = f"✅ FREMVISNING BOOKET AUTOMATISK — {forklaring}"
                         elif AUTOBOOK == "til":
                             booking_linje = f"❗ Automatisk booking mislykkedes ({forklaring}) — BOOK SELV NU!"
@@ -1060,7 +1079,7 @@ def koer(test=False):
             if not test:
                 state["set"][b["url"]] = nu
 
-    if foerste_gang and not test:
+    if foerste_gang and not test and "--kun" not in sys.argv:
         send_telegram(f"✅ Boligbot kører. Første scanning færdig — {fundet_noget} relevante boliger lige nu. "
                       "Fremover får du kun besked om nye.")
     if not test:
