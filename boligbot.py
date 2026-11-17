@@ -825,13 +825,28 @@ def kereby_book(b, send=False):
             if not klar:
                 return fejl("'Bestil fremvisning' er stadig låst — et felt mangler måske")
 
-            # 6) Bestil
-            bestil.first.click()
+            # 6) Bestil. Knappen kan ligge under en hvid "fade" nederst i vinduet,
+            #    så: rul den frem, prøv et normalt klik, ellers tving klikket igennem.
+            knap = bestil.first
+            try:
+                knap.scroll_into_view_if_needed(timeout=5000)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                knap.click(timeout=6000)
+                log("6 trykkede 'Bestil fremvisning'")
+            except Exception:  # noqa: BLE001
+                try:
+                    knap.click(force=True, timeout=6000)
+                    log("6 trykkede 'Bestil fremvisning' (tvunget klik)")
+                except Exception:  # noqa: BLE001
+                    knap.evaluate("e => e.click()")
+                    log("6 trykkede 'Bestil fremvisning' (via siden)")
             side.wait_for_timeout(4000)
             tekst = side.inner_text("body")
             endnu_der = bestil.first.is_visible() if bestil.count() else False
             if re.search(r"\btak\b|modtaget|bekræftet|er booket|er bestilt|bestilling", tekst, re.I) and not endnu_der:
-                log("6 bestilt ✅")
+                log("7 bestilt ✅")
                 return True, f"{dato} kl. {tid}"
             if not endnu_der:
                 log("6 trykkede 'Bestil fremvisning' — vinduet lukkede, men ingen tydelig bekræftelse")
