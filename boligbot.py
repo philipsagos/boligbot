@@ -950,7 +950,8 @@ def gem_state(state):
 # Boliger der skal vurderes én gang til (fx efter en rettelse af reglerne).
 # Skift GENVURDER_VERSION når listen ændres.
 GENVURDER = ["https://cityapartment.dk/cityapartments/bohmensgade-14-3-tv/"]
-DIAGNOSE_V = "2026-11-17b"   # skift for at køre en ny kontrol af Kereby-bookingen
+DIAGNOSE_V = "2026-11-17b"
+KONTROL_AKTIV = False       # sæt til True for at køre én kontrol   # skift for at køre en ny kontrol af Kereby-bookingen
 GENVURDER_VERSION = "2026-11-16c"
 
 
@@ -988,7 +989,7 @@ def koer(test=False):
         state["fejl"][navn] = 0
         print(f"{navn}: {len(boliger)} ledige boliger")
 
-        if navn == "Kereby" and AUTOBOOK in ("til", "test") and not test and state.get("diagnose_v") != DIAGNOSE_V:
+        if KONTROL_AKTIV and navn == "Kereby" and AUTOBOOK in ("til", "test") and not test and ("__kontrol_" + DIAGNOSE_V) not in state["set"]:
             proeve = boliger[0]
             try:
                 kereby_detaljer(proeve)
@@ -997,7 +998,7 @@ def koer(test=False):
             ok, forklaring = kereby_book(proeve, send=False, foto="kontrol.png")
             send_telegram_foto("kontrol.png", f"🔍 Kontrol af Kereby-booking (intet er sendt): "
                                                f"{'✅' if ok else '❌'} {forklaring}"[:1000])
-            state["diagnose_v"] = DIAGNOSE_V
+            state["set"]["__kontrol_" + DIAGNOSE_V] = nu
 
         if navn == "Kereby" and AUTOBOOK == "test" and not test:
             proeve = boliger[0]
@@ -1007,10 +1008,10 @@ def koer(test=False):
                 pass
             ok, forklaring = kereby_book(proeve, send=False)
             print(f"  [booking-test på {proeve['url']}] {forklaring}")
-            if not state.get("booking_test_sendt_v4"):
+            if "__booking_test_v5" not in state["set"]:
                 send_telegram(f"🧪 <b>Booking-test på Kereby</b> ({html.escape(proeve['url'])})\n"
                               f"{'✅' if ok else '❌'} {html.escape(forklaring)}\n\nIntet er sendt til Kereby.")
-                state["booking_test_sendt_v4"] = True
+                state["set"]["__booking_test_v5"] = nu
 
         for b in boliger:
             if b["url"] in state["set"] and not test:
