@@ -994,7 +994,7 @@ def koer(test=False):
             state["fejl"][navn] = n
             print(f"{navn}: FEJL {ex}")
             if n == 3 and not test:
-                send_telegram(f"⚠️ Boligbot kan ikke hente {navn} (3 gange i træk): {html.escape(str(ex))[:200]}")
+                print(f"  ⚠️ kan ikke hente {navn} (3 gange i træk) — ingen Telegram-besked (kun booking-fejl sendes)")
             continue
 
         if not boliger:
@@ -1002,7 +1002,7 @@ def koer(test=False):
             state["fejl"][navn] = n
             print(f"{navn}: 0 ledige boliger fundet")
             if n == 12 and not test:   # ca. 1 time uden noget
-                send_telegram(f"⚠️ Boligbot har ikke fundet en eneste ledig bolig på {navn} i en time. "
+                print(f"  ⚠️ ingen ledige boliger på {navn} i en time. "
                               "Måske er siden ændret — tjek med --test.")
             continue
         state["fejl"][navn] = 0
