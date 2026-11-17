@@ -571,6 +571,21 @@ def send_telegram(tekst):
             print("Telegram-fejl:", chat_id, r.status_code, r.text)
 
 
+def send_telegram_foto(sti, tekst=""):
+    token = os.getenv("TELEGRAM_TOKEN")
+    chat = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat or not Path(sti).exists():
+        print(f"[foto ikke sendt: {sti}] {tekst}")
+        return
+    for chat_id in [c.strip() for c in chat.split(",") if c.strip()]:
+        with open(sti, "rb") as f:
+            r = requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",
+                              data={"chat_id": chat_id, "caption": tekst[:1000]},
+                              files={"photo": f}, timeout=TIMEOUT)
+        if not r.ok:
+            print("Telegram-fejl (foto):", chat_id, r.status_code, r.text[:200])
+
+
 def ansoegningstekst(b):
     return ANSOEGNING.format(
         adresse=b["adresse"].split(",")[0] if b["adresse"] else "jeres annonce",
@@ -648,7 +663,7 @@ FLUEBEN_JS = r"""(root) => {
 }"""
 
 
-def kereby_book(b, send=False):
+def kereby_book(b, send=False, foto=None):
     """Booker fremvisning på Kereby: første ledige dato og tid.
     send=False: udfylder alt men trykker IKKE 'Bestil fremvisning'.
     Returnerer (lykkedes, forklaring)."""
@@ -667,6 +682,10 @@ def kereby_book(b, send=False):
         browser = p.chromium.launch()
         side = browser.new_context(user_agent=HEADERS["User-Agent"], locale="da-DK",
                                    viewport={"width": 1366, "height": 900}).new_page()
+        svar = []   # serverens svar på indsendelser (POST/PUT) — bevis for at bestillingen kom frem
+        stoej = re.compile(r"google|facebook|doubleclick|hotjar|clarity|linkedin|tiktok|analytics|gtm|cookie|consent|sentry|bing", re.I)
+        side.on("response", lambda r: svar.append((r.request.method, r.status, r.url))
+                if r.request.method in ("POST", "PUT") and not stoej.search(r.url) else None)
         try:
             side.goto(b["url"], wait_until="domcontentloaded", timeout=45000)
             try:
@@ -809,7 +828,15 @@ def kereby_book(b, send=False):
             tlf_f.fill(re.sub(r"^\+?45", "", TELEFON.replace(" ", "")))
             if kom_f is not None:
                 kom_f.fill(ansoegningstekst(b))
-            flueben = vindue.evaluate(FLUEBEN_JS)
+            flueben = "?"
+            accept = vindue.get_by_text(re.compile(r"Jeg accepterer", re.I))
+            if accept.count():
+                try:
+                    accept.first.click(position={"x": 2, "y": 8}, timeout=4000)   # rigtigt museklik ved boksen
+                    side.wait_for_timeout(400)
+                except Exception:  # noqa: BLE001
+                    pass
+            flueben = vindue.evaluate(FLUEBEN_JS)   # sætter kun flueben hvis det ikke allerede er sat
             log(f"5 udfyldte navn, email, telefon{', kommentar' if kom_f else ''} · flueben: {flueben}")
 
             bestil = vindue.get_by_role("button", name=re.compile(r"Bestil fremvisning", re.I))
@@ -817,41 +844,55 @@ def kereby_book(b, send=False):
                 bestil = vindue.get_by_text(re.compile(r"^\s*Bestil fremvisning\s*$", re.I))
             if not bestil.count():
                 return fejl("fandt ikke knappen 'Bestil fremvisning'")
-            klar = bestil.first.is_enabled()
-            if not send:
-                log("6 TEST: stoppede før 'Bestil fremvisning' — intet er sendt"
-                    + ("" if klar else " (OBS: knappen ser stadig grå/låst ud)"))
-                return klar, f"dato {dato} kl. {tid} — " + " → ".join(trin)
-            if not klar:
-                return fejl("'Bestil fremvisning' er stadig låst — et felt mangler måske")
-
-            # 6) Bestil. Knappen kan ligge under en hvid "fade" nederst i vinduet,
-            #    så: rul den frem, prøv et normalt klik, ellers tving klikket igennem.
             knap = bestil.first
             try:
                 knap.scroll_into_view_if_needed(timeout=5000)
             except Exception:  # noqa: BLE001
                 pass
+            DIAG_JS = r"""(e) => { const st = getComputedStyle(e); const r = e.getBoundingClientRect();
+                const over = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                return {laast: !!(e.disabled || e.getAttribute('aria-disabled') === 'true' || st.pointerEvents === 'none' || /disabled|inactive/i.test(e.className)),
+                        html: e.outerHTML.slice(0, 220), pointer: st.pointerEvents, opacity: st.opacity,
+                        dækket_af: over && over !== e && !e.contains(over) ? over.outerHTML.slice(0, 160) : null,
+                        flueben: [...document.querySelectorAll('input[type=checkbox]')].map(c => c.checked)}; }"""
+            diag = knap.evaluate(DIAG_JS)
+            for _ in range(10):          # giv siden op til 5 sek. til at låse knappen op
+                if not diag["laast"]:
+                    break
+                side.wait_for_timeout(500)
+                diag = knap.evaluate(DIAG_JS)
+            print(f"  [booking-diag] knap: {diag}")
+            if foto:
+                side.screenshot(path=foto)
+            klar = not diag["laast"] and knap.is_enabled()
+            if not send:
+                log("6 TEST: stoppede før 'Bestil fremvisning' — intet er sendt"
+                    + ("" if klar else " (OBS: knappen er låst)")
+                    + (f" (OBS: noget ligger ovenpå knappen: {diag['dækket_af'][:80]})" if diag.get("dækket_af") else ""))
+                return klar, f"dato {dato} kl. {tid} — " + " → ".join(trin)
+            if not klar:
+                return fejl(f"'Bestil fremvisning' er låst — et felt er måske ikke godkendt (flueben: {diag['flueben']})")
+
+            # 6) Bestil
+            foer = len(svar)
             try:
                 knap.click(timeout=6000)
                 log("6 trykkede 'Bestil fremvisning'")
             except Exception:  # noqa: BLE001
-                try:
-                    knap.click(force=True, timeout=6000)
-                    log("6 trykkede 'Bestil fremvisning' (tvunget klik)")
-                except Exception:  # noqa: BLE001
-                    knap.evaluate("e => e.click()")
-                    log("6 trykkede 'Bestil fremvisning' (via siden)")
-            side.wait_for_timeout(4000)
-            tekst = side.inner_text("body")
-            endnu_der = bestil.first.is_visible() if bestil.count() else False
-            if re.search(r"\btak\b|modtaget|bekræftet|er booket|er bestilt|bestilling", tekst, re.I) and not endnu_der:
-                log("7 bestilt ✅")
+                knap.click(force=True, timeout=6000)
+                log("6 trykkede 'Bestil fremvisning' (tvunget klik — noget lå ovenpå)")
+            side.wait_for_timeout(5000)
+            nye = svar[foer:]
+            print(f"  [booking-diag] server-svar efter klik: {nye[:6]}")
+            if foto:
+                side.screenshot(path=foto)
+            gode = [x for x in nye if 200 <= x[1] < 300]
+            if gode:
+                log(f"7 Kereby's server modtog bestillingen (svar {gode[0][1]}) ✅")
                 return True, f"{dato} kl. {tid}"
-            if not endnu_der:
-                log("6 trykkede 'Bestil fremvisning' — vinduet lukkede, men ingen tydelig bekræftelse")
-                return True, f"{dato} kl. {tid} (tjek din mail for bekræftelse)"
-            return fejl("trykkede 'Bestil fremvisning', men vinduet står der stadig — tjek selv")
+            if nye:
+                return fejl(f"Kereby's server afviste bestillingen (svar {nye[0][1]})")
+            return fejl("ingen bestilling nåede Kereby's server — klikket blev ikke registreret")
         except Exception as ex:  # noqa: BLE001
             return fejl(f"uventet fejl: {str(ex)[:150]}")
         finally:
@@ -901,6 +942,7 @@ def gem_state(state):
 # Boliger der skal vurderes én gang til (fx efter en rettelse af reglerne).
 # Skift GENVURDER_VERSION når listen ændres.
 GENVURDER = ["https://cityapartment.dk/cityapartments/bohmensgade-14-3-tv/"]
+DIAGNOSE_V = "2026-11-17"   # skift for at køre en ny kontrol af Kereby-bookingen
 GENVURDER_VERSION = "2026-11-16c"
 
 
@@ -937,6 +979,17 @@ def koer(test=False):
             continue
         state["fejl"][navn] = 0
         print(f"{navn}: {len(boliger)} ledige boliger")
+
+        if navn == "Kereby" and AUTOBOOK in ("til", "test") and not test and state.get("diagnose_v") != DIAGNOSE_V:
+            proeve = boliger[0]
+            try:
+                kereby_detaljer(proeve)
+            except Exception:  # noqa: BLE001
+                pass
+            ok, forklaring = kereby_book(proeve, send=False, foto="kontrol.png")
+            send_telegram_foto("kontrol.png", f"🔍 Kontrol af Kereby-booking (intet er sendt): "
+                                               f"{'✅' if ok else '❌'} {forklaring}"[:1000])
+            state["diagnose_v"] = DIAGNOSE_V
 
         if navn == "Kereby" and AUTOBOOK == "test" and not test:
             proeve = boliger[0]
@@ -978,7 +1031,7 @@ def koer(test=False):
                     if AUTOBOOK == "til" and bookinger.get(idag, 0) >= MAKS_BOOKINGER_PR_DOEGN:
                         booking_linje = "⏸ Automatisk booking sprunget over (maks. pr. døgn nået) — book selv!"
                     else:
-                        ok, forklaring = kereby_book(b, send=(AUTOBOOK == "til"))
+                        ok, forklaring = kereby_book(b, send=(AUTOBOOK == "til"), foto="booking.png")
                         print(f"  [booking] {forklaring}")
                         if AUTOBOOK == "til" and ok:
                             bookinger[idag] = bookinger.get(idag, 0) + 1
@@ -992,6 +1045,9 @@ def koer(test=False):
                     if booking_linje:
                         besked = f"<b>{html.escape(booking_linje)}</b>\n\n" + besked
                     send_telegram(besked)
+                    if booking_linje and Path("booking.png").exists():
+                        send_telegram_foto("booking.png", "Sådan så Kereby's side ud efter bookingforsøget")
+                        Path("booking.png").unlink()
             if not test:
                 state["set"][b["url"]] = nu
 
