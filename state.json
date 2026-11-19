@@ -10,7 +10,7 @@
   "CEJ": 4,
   "City Apartment": 0,
   "EDC": 0,
-  "Heimstaden": 0,
+  "Heimstaden": 1,
   "Kereby": 0
  },
  "genvurder_version": "2026-11-16c",
@@ -36,6 +36,7 @@
   "https://cityapartment.dk/cityapartments/puggaardsgade-11-1-tv/": "2026-10-29 14:21",
   "https://cityapartment.dk/cityapartments/rigensgade-5-4-th/": "2026-10-14 07:51",
   "https://cityapartment.dk/cityapartments/saxovej-75e-st-3/": "2026-10-14 07:51",
+  "https://cityapartment.dk/cityapartments/sjaellandsgade-7-3-sal/": "2026-11-19 08:37",
   "https://cityapartment.dk/cityapartments/smallegade-8-4-th/": "2026-11-13 10:51",
   "https://cityapartment.dk/cityapartments/stockholmsgade-49-st/": "2026-11-12 15:06",
   "https://cityapartment.dk/cityapartments/tasingegade-20-st-th-2/": "2026-10-14 07:51",
