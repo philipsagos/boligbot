@@ -112,9 +112,14 @@ def er_stueetage(adresse):
     """Kigger på etagedelen af adressen, fx 'Vej 1, st. th, 2200 ...'."""
     dele = [d.strip().lower() for d in adresse.split(",")]
     for d in dele[1:]:
-        if re.match(r"^(st|stuen|kl|kld|kælder|parterre)\b", d):
+        if re.match(r"^(st|stuen|parterre)\b", d):
             return True
     return False
+
+
+def er_kaelder(adresse):
+    dele = [d.strip().lower() for d in adresse.split(",")]
+    return any(re.match(r"^(kl|kld|kælder)\b", d) for d in dele[1:])
 
 
 def find_kort(element, markoer):
@@ -522,8 +527,11 @@ def vurder(b):
         gul = True
         noter.append("område ukendt")
 
+    if b["adresse"] and er_kaelder(b["adresse"]):
+        return "nej", ["kælder"]
     if b["adresse"] and er_stueetage(b["adresse"]):
-        return "nej", ["stueetage"]
+        gul = True   # stueetage giver besked, men ingen automatisk booking
+        noter.append("stueetage")
     if not b["adresse"]:
         gul = True
         noter.append("etage ukendt — tjek at det ikke er stuen")
@@ -964,10 +972,10 @@ def gem_state(state):
 
 # Boliger der skal vurderes én gang til (fx efter en rettelse af reglerne).
 # Skift GENVURDER_VERSION når listen ændres.
-GENVURDER = ["https://cityapartment.dk/cityapartments/bohmensgade-14-3-tv/"]
+GENVURDER = ["https://kereby.dk/bolig/bredegrund-42-st-th-2300-kobenhavn-s/"]
 DIAGNOSE_V = "2026-11-17b"
 KONTROL_AKTIV = False       # sæt til True for at køre én kontrol   # skift for at køre en ny kontrol af Kereby-bookingen
-GENVURDER_VERSION = "2026-11-16c"
+GENVURDER_VERSION = "2026-11-26"
 
 
 def koer(test=False):
